@@ -1,104 +1,177 @@
-import cv2
-import numpy as np
-from scipy.optimize import linear_sum_assignment
-from tqdm import tqdm
+import os
+import json
+import uuid
+import shutil
+import asyncio
+from fastapi import FastAPI, UploadFile, File, Form, BackgroundTasks, WebSocket, WebSocketDisconnect, status, HTTPException
+from fastapi.responses import FileResponse
+from fastapi.middleware.cors import CORSMiddleware
 
-from src.core.config import Config
-from src.core.vision import VisionProcessor
-from src.core.tracker import RockTracker
-from src.core.exporter import ResultsExporter
+from core.config import Config
+from service import run_tracking_pipeline
 
-def main():
-    config = Config()
-    vision = VisionProcessor(config)
-    exporter = ResultsExporter(config)
+app = FastAPI(title="Flyrocks Tracker API - Concurrent")
 
-    cap = cv2.VideoCapture(config.VIDEO_PATH)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    ret, first_frame = cap.read()
-    if not ret: return
-    
-    map_initial = first_frame.copy()
-    last_valid_frame = first_frame.copy()
-    prev_gray = cv2.cvtColor(first_frame, cv2.COLOR_BGR2GRAY)
-    
-    trackers = []
-    all_paths = []
-    track_id_count = 0
-    
-    print(f"Procesando {total_frames} frames...")
-    pbar = tqdm(total=total_frames, unit="frames", desc="Tracking Flyrocks")
+# Habilitamos CORS para que cualquier Frontend (HTML local o React/Angular) pueda conectarse
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-    while True:
-        ret, frame = cap.read()
-        if not ret: break
+# Diccionario en memoria para rastrear múltiples trabajos simultáneos
+# Estructura: { "job_id_1": { estado... }, "job_id_2": { estado... } }
+jobs = {}
+
+def update_progress(job_id: str, current: int, total: int, current_status: str, result_path: str = None):
+    """Callback para actualizar el estado de un trabajo específico."""
+    if job_id in jobs:
+        jobs[job_id]["current_frame"] = current
+        jobs[job_id]["total_frames"] = total
+        jobs[job_id]["status"] = current_status
         
-        last_valid_frame = frame 
-        curr_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        
-        # 1. Estabilización
-        M = vision.get_fast_stabilization_matrix(prev_gray, curr_gray)
-        if M is not None:
-            frame_stab = cv2.warpAffine(frame, M, (frame.shape[1], frame.shape[0]))
-            gray_stab = cv2.warpAffine(curr_gray, M, (frame.shape[1], frame.shape[0]))
-        else:
-            frame_stab, gray_stab = frame, curr_gray
-
-        # 2. Detecciones
-        detections = vision.extract_detections(gray_stab)
-
-        # 3. Asignación (Húngaro)
-        assigned_trackers, assigned_detections = set(), set()
-        if trackers and detections:
-            T_pos = np.array([(t.kalman.statePost[0][0], t.kalman.statePost[1][0]) for t in trackers])
-            D_pos = np.array(detections)
-            cost = np.linalg.norm(T_pos[:, np.newaxis, :] - D_pos[np.newaxis, :, :], axis=2)
-            row, col = linear_sum_assignment(cost)
+        if result_path:
+            jobs[job_id]["result_file_path"] = result_path
             
-            for r, c in zip(row, col):
-                if cost[r, c] < config.DIST_THRESH:
-                    trackers[r].update(detections[c])
-                    assigned_trackers.add(r)
-                    assigned_detections.add(c)
+        if current_status in ["Completado", "Error"]:
+            jobs[job_id]["is_running"] = False
 
-        # 4. Nuevos trackers
-        for i, det in enumerate(detections):
-            if i not in assigned_detections:
-                if cv2.pointPolygonTest(config.ORIGIN_ZONE, (float(det[0]), float(det[1])), False) >= 0:
-                    trackers.append(RockTracker(track_id_count, det, config))
-                    track_id_count += 1
-
-        # 5. Mantenimiento de Trackers vivos
-        alive = []
-        for i, t in enumerate(trackers):
-            if i not in assigned_trackers: t.predict_only()
-            
-            pos = t.kalman.statePost
-            if (t.frames_since_seen <= config.MAX_MISSING and 
-                0 < pos[0][0] < frame.shape[1] and 
-                0 < pos[1][0] < frame.shape[0]):
-                alive.append(t)
-            elif t.is_confirmed and t.best_valid_path:
-                all_paths.append({'path': t.best_valid_path, 'id': t.id})
-        trackers = alive
+def background_tracking_task(config: Config, job_id: str):
+    """Envuelve el pipeline, inyecta el callback y limpia la basura al terminar."""
+    def callback(curr, tot, stat, res=None):
+        update_progress(job_id, curr, tot, stat, res)
         
-        prev_gray = gray_stab.copy()
-        pbar.update(1) 
+    try:
+        # Ejecutamos el servicio pasándole el ID único
+        run_tracking_pipeline(config=config, job_id=job_id, progress_callback=callback)
+    except Exception as e:
+        update_progress(job_id, 0, 0, f"Error: {str(e)}", None)
+        print(f"Error en job {job_id}: {e}")
+    finally:
+        # IMPORTANTE: Eliminamos el video temporal para no llenar el disco del servidor
+        if os.path.exists(config.VIDEO_PATH):
+            try:
+                os.remove(config.VIDEO_PATH)
+                print(f"Video temporal {config.VIDEO_PATH} eliminado.")
+            except Exception as cleanup_error:
+                print(f"No se pudo eliminar el video temporal: {cleanup_error}")
 
-    pbar.close()
+# ==========================================
+# 1. ENDPOINT REST: SUBIDA E INICIO (202 Accepted)
+# ==========================================
+@app.post("/api/v1/analyze", status_code=status.HTTP_202_ACCEPTED)
+async def upload_and_analyze(
+    background_tasks: BackgroundTasks,
+    video: UploadFile = File(...),
+    origin_zone: str = Form(...),
+    expected_projection_zone: str = Form(...),
+    h_matrix: str = Form(...)
+):
+    # Generamos un ID único para este análisis
+    job_id = str(uuid.uuid4())
     
-    # 6. Guardar los que quedaron vivos al final
-    for t in trackers:
-        if t.is_confirmed and t.best_valid_path:
-            all_paths.append({'path': t.best_valid_path, 'id': t.id})
+    # Inicializamos el estado en el diccionario global
+    jobs[job_id] = {
+        "is_running": True,
+        "status": "Preparando...",
+        "current_frame": 0,
+        "total_frames": 0,
+        "result_file_path": None
+    }
 
-    # 7. Exportación
-    print(f"\nGenerando mapas visuales con {len(all_paths)} eventos registrados...")
-    cv2.imwrite("mapa_impactos_inicio.jpg", exporter.draw_visual_map(map_initial, all_paths))
-    cv2.imwrite("mapa_impactos_final.jpg", exporter.draw_visual_map(last_valid_frame, all_paths))
-    exporter.export_to_json(all_paths, last_valid_frame.shape, "trayectorias_eventos.json")
+    # Guardamos el video temporalmente con el job_id para evitar colisiones
+    video_path = f"temp_{job_id}_{video.filename}"
+    with open(video_path, "wb") as buffer:
+        shutil.copyfileobj(video.file, buffer)
+        
+    # Parseamos los datos JSON enviados desde el Frontend
+    try:
+        origin_list = json.loads(origin_zone)
+        projection_list = json.loads(expected_projection_zone)
+        h_matrix_list = json.loads(h_matrix)
+    except json.JSONDecodeError:
+        # Si envían un JSON mal formado, limpiamos y lanzamos error
+        os.remove(video_path)
+        del jobs[job_id]
+        raise HTTPException(status_code=400, detail="Formato JSON inválido en las zonas o matriz.")
 
-    cap.release()
+    # Construimos la configuración para este trabajo específico
+    config = Config(
+        video_path=video_path,
+        origin_zone=origin_list,
+        projection_zone=projection_list,
+        h_matrix=h_matrix_list
+    )
+
+    # Enviamos a segundo plano (Threadpool)
+    background_tasks.add_task(background_tracking_task, config, job_id)
+
+    # Devolvemos inmediatamente el ID para que el frontend pueda escuchar
+    return {
+        "message": "Video e información recibidos. Procesamiento iniciado.",
+        "job_id": job_id
+    }
+
+# ==========================================
+# 2. ENDPOINT REST: DESCARGA DE RESULTADOS
+# ==========================================
+@app.get("/api/v1/results/download/{job_id}")
+async def download_results(job_id: str):
+    if job_id not in jobs:
+        raise HTTPException(status_code=404, detail="ID de trabajo no encontrado.")
+        
+    job = jobs[job_id]
+    if job["is_running"]:
+        raise HTTPException(status_code=400, detail="El análisis aún está en ejecución.")
+        
+    result_path = job.get("result_file_path")
+    if not result_path or not os.path.exists(result_path):
+        raise HTTPException(status_code=404, detail="Archivo de resultados no encontrado. Quizás falló.")
+        
+    return FileResponse(
+        path=result_path, 
+        media_type="application/json", 
+        filename=f"flyrocks_resultados_{job_id}.json"
+    )
+
+# ==========================================
+# 3. WEBSOCKET: ESTADO EN TIEMPO REAL
+# ==========================================
+@app.websocket("/ws/v1/progress/{job_id}")
+async def websocket_progress(websocket: WebSocket, job_id: str):
+    await websocket.accept()
+    
+    if job_id not in jobs:
+        await websocket.send_json({"error": "ID de trabajo no encontrado", "status": "Error"})
+        await websocket.close()
+        return
+
+    try:
+        while True:
+            job = jobs[job_id]
+            total = job["total_frames"]
+            current = job["current_frame"]
+            percentage = round((current / total * 100), 2) if total > 0 else 0
+
+            await websocket.send_json({
+                "status": job["status"],
+                "current_frame": current,
+                "total_frames": total,
+                "percentage": percentage,
+                "is_running": job["is_running"]
+            })
+            
+            if not job["is_running"]:
+                await asyncio.sleep(1) # Pequeño delay para asegurar que el frontend leyó el 100%
+                break
+                
+            await asyncio.sleep(0.5)
+
+    except WebSocketDisconnect:
+        print(f"Cliente con Job ID {job_id} desconectado del WebSocket.")
 
 if __name__ == "__main__":
-    main()
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
