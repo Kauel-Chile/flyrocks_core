@@ -128,6 +128,25 @@ async def upload_and_analyze(
         Job.update_status(job_id, engine, status=f"Error de carga: {str(e)}", is_running=False)
         raise HTTPException(status_code=500, detail=f"Error al iniciar el análisis: {str(e)}")
 
+@app.get("/api/results/{job_id}")
+async def download_results(job_id: str):
+    with Session(engine) as session:
+        job = session.get(Job, job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="ID de trabajo no encontrado.")
+        
+        if job.is_running:
+            raise HTTPException(status_code=400, detail="El análisis sigue en curso.")
+            
+        if not job.result_file_path or not os.path.exists(job.result_file_path):
+            raise HTTPException(status_code=404, detail="Archivo de resultados no disponible.")
+            
+        return FileResponse(
+            path=job.result_file_path, 
+            filename=f"flyrocks_{job_id}.json"
+        )
+
+
 @app.get("/api/report/{job_id}")
 async def download_report(job_id: str):
     with Session(engine) as session:
