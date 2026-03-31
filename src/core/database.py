@@ -13,7 +13,8 @@ class Job(SQLModel, table=True):
     current_frame: int = Field(default=0)
     total_frames: int = Field(default=0)
     result_file_path: Optional[str] = Field(default=None)
-
+    report_file_path: Optional[str] = None
+    
     @classmethod
     def update_status(cls, job_id: str, engine, **kwargs):
         """Método de clase para actualizar el estado de forma atómica."""

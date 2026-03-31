@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Flyrocks Tracker - Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+</head>
+<body class="bg-slate-50 font-sans text-slate-900">
+
+    <div class="max-w-4xl mx-auto py-12 px-4">
+        <header class="text-center mb-12">
+            <h1 class="text-4xl font-extrabold text-slate-800 mb-2">Flyrocks <span class="text-blue-600">Tracker</span></h1>
+            <p class="text-slate-500 text-lg">Análisis cinemático y generación automática de reportes de voladura.</p>
+        </header>
+
+        <section id="upload-section" class="bg-white rounded-2xl shadow-sm border border-slate-200 p-8 mb-8">
+            <h2 class="text-xl font-bold mb-6 flex items-center"><i class="fa-solid fa-cloud-arrow-up mr-2 text-blue-500"></i> Nueva Configuración</h2>
+            <form id="analyze-form" class="space-y-6">
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    
+                    <div>
+                        <label class="block text-sm font-semibold mb-2">Archivo de Video (.mp4)</label>
+                        <input type="file" id="video" accept="video/*" required 
+                            class="w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer border border-slate-200 rounded-lg p-2">
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-semibold mb-2 text-blue-700"><i class="fa-solid fa-file-csv mr-1"></i> Secuencia de Detonación (.csv)</label>
+                        <input type="file" id="detonation_sequence" accept=".csv" required 
+                            class="w-full text-sm text-slate-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-slate-100 file:text-slate-700 hover:file:bg-slate-200 cursor-pointer border border-slate-200 rounded-lg p-2">
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-semibold mb-2">Zona de Origen (JSON)</label>
+                        <textarea id="origin_zone" class="w-full h-24 p-3 text-xs font-mono bg-slate-50 border border-slate-200 rounded-lg">[[100, 100], [200, 100], [200, 200], [100, 200]]</textarea>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-semibold mb-2">Proyección Esperada (JSON)</label>
+                        <textarea id="expected_zone" class="w-full h-24 p-3 text-xs font-mono bg-slate-50 border border-slate-200 rounded-lg">[[300, 300], [500, 300], [500, 500], [300, 500]]</textarea>
+                    </div>
+                    
+                    <div class="md:col-span-2">
+                        <label class="block text-sm font-semibold mb-2">Matriz H (Homografía)</label>
+                        <textarea id="h_matrix" class="w-full p-3 text-xs font-mono bg-slate-50 border border-slate-200 rounded-lg">[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]</textarea>
+                    </div>
+                </div>
+                
+                <button type="submit" id="submit-btn" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 rounded-xl transition-all shadow-lg shadow-blue-200">
+                    <i class="fa-solid fa-play mr-2"></i> Iniciar Análisis de Voladura
+                </button>
+            </form>
+        </section>
+
+        <section id="progress-section" class="hidden bg-white rounded-2xl shadow-sm border border-slate-200 p-8">
+            <div class="flex justify-between items-center mb-6">
+                <h2 class="text-xl font-bold">Estado: <span id="status-text" class="text-blue-600">Subiendo archivos y conectando...</span></h2>
+                <span id="job-id-display" class="text-xs bg-slate-100 px-3 py-1 rounded-full text-slate-500 font-mono">ID: --</span>
+            </div>
+
+            <div class="w-full bg-slate-100 rounded-full h-4 mb-4 overflow-hidden">
+                <div id="progress-bar" class="bg-blue-600 h-full transition-all duration-500" style="width: 0%"></div>
+            </div>
+            <p class="text-right text-sm font-bold text-slate-600 mb-8"><span id="percentage-text">0</span>% completado</p>
+
+            <div id="results-actions" class="hidden grid grid-cols-1 sm:grid-cols-2 gap-4 pt-6 border-t border-slate-100">
+                <a id="btn-json" href="#" target="_blank" class="pointer-events-none opacity-50 flex items-center justify-center p-4 bg-slate-800 text-white rounded-xl transition-all">
+                    <i id="icon-json" class="fa-solid fa-spinner fa-spin mr-2"></i> <span id="text-json">Procesando Datos...</span>
+                </a>
+                <a id="btn-pdf" href="#" target="_blank" class="pointer-events-none opacity-50 flex items-center justify-center p-4 bg-red-600 text-white rounded-xl transition-all">
+                    <i id="icon-pdf" class="fa-solid fa-spinner fa-spin mr-2"></i> <span id="text-pdf">Esperando PDF...</span>
+                </a>
+            </div>
+        </section>
+    </div>
+
+    <script>
+        const API_BASE_URL = 'http://localhost:8000';
+        const analyzeForm = document.getElementById('analyze-form');
+        const progressSection = document.getElementById('progress-section');
+        const uploadSection = document.getElementById('upload-section');
+
+        analyzeForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const formData = new FormData();
+            
+            // Archivos
+            formData.append('video', document.getElementById('video').files[0]);
+            formData.append('detonation_sequence', document.getElementById('detonation_sequence').files[0]); // <-- NUEVO
+            
+            // Textos JSON
+            formData.append('origin_zone', document.getElementById('origin_zone').value);
+            formData.append('expected_projection_zone', document.getElementById('expected_zone').value);
+            formData.append('h_matrix', document.getElementById('h_matrix').value);
+
+            try {
+                // UI: Bloquear botón mientras sube
+                const submitBtn = document.getElementById('submit-btn');
+                submitBtn.disabled = true;
+                submitBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-2"></i> Subiendo archivos...';
+                submitBtn.classList.replace('bg-blue-600', 'bg-slate-400');
+
+                const response = await fetch(`${API_BASE_URL}/api/analyze`, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.detail || 'Error al subir los archivos');
+                }
+
+                const data = await response.json();
+                startProgressMonitoring(data.job_id);
+
+            } catch (err) {
+                alert('Error: ' + err.message);
+                
+                // UI: Restaurar botón si falla
+                const submitBtn = document.getElementById('submit-btn');
+                submitBtn.disabled = false;
+                submitBtn.innerHTML = '<i class="fa-solid fa-play mr-2"></i> Iniciar Análisis de Voladura';
+                submitBtn.classList.replace('bg-slate-400', 'bg-blue-600');
+            }
+        });
+
+        function startProgressMonitoring(jobId) {
+            uploadSection.classList.add('hidden');
+            progressSection.classList.remove('hidden');
+            
+            document.getElementById('results-actions').classList.remove('hidden');
+            document.getElementById('job-id-display').innerText = `ID: ${jobId}`;
+
+            const ws = new WebSocket(`ws://localhost:8000/ws/progress/${jobId}`);
+
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                
+                // Actualizar textos y barra
+                document.getElementById('status-text').innerText = data.status;
+                document.getElementById('progress-bar').style.width = `${data.percentage}%`;
+                document.getElementById('percentage-text').innerText = data.percentage;
+
+                // Feedback visual cuando genera reporte
+                if (data.status.includes("Reporte PDF") || data.percentage >= 99) {
+                    document.getElementById('text-pdf').innerText = 'Generando Informe...';
+                }
+
+                // Desbloquear JSON al terminar el análisis numérico
+                if (!data.is_running) {
+                    const btnJson = document.getElementById('btn-json');
+                    btnJson.classList.remove('pointer-events-none', 'opacity-50');
+                    btnJson.classList.add('hover:bg-slate-900', 'shadow-md');
+                    document.getElementById('icon-json').className = 'fa-solid fa-code mr-2';
+                    document.getElementById('text-json').innerText = 'Descargar JSON';
+                    btnJson.href = `${API_BASE_URL}/api/results/${jobId}`;
+                }
+
+                // Desbloquear PDF cuando el backend confirme su existencia
+                if (data.has_report) {
+                    const btnPdf = document.getElementById('btn-pdf');
+                    btnPdf.classList.remove('pointer-events-none', 'opacity-50');
+                    btnPdf.classList.add('hover:bg-red-700', 'shadow-md');
+                    document.getElementById('icon-pdf').className = 'fa-solid fa-file-pdf mr-2';
+                    document.getElementById('text-pdf').innerText = 'Descargar Informe PDF';
+                    btnPdf.href = `${API_BASE_URL}/api/report/${jobId}`;
+                }
+
+                // Cerrar WS si todo terminó
+                if (!data.is_running && data.has_report) {
+                    document.getElementById('status-text').innerText = "✅ Análisis Finalizado";
+                    ws.close();
+                }
+            };
+
+            ws.onerror = (error) => {
+                console.error('WebSocket Error:', error);
+                document.getElementById('status-text').innerText = "❌ Error de conexión";
+                document.getElementById('status-text').classList.replace('text-blue-600', 'text-red-600');
+            };
+        }
+    </script>
+</body>
+</html>

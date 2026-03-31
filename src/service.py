@@ -1,15 +1,17 @@
 import cv2
 import numpy as np
+import os
 from scipy.optimize import linear_sum_assignment
 
 from core.vision import VisionProcessor
 from core.tracker import RockTracker
 from core.exporter import ResultsExporter
+# Asegúrate de que este import apunte al archivo donde pegaste el código largo del PDF
+from core.report import generar_pdf_job 
 
 def run_tracking_pipeline(config, job_id: str, progress_callback=None):
     """
-    Ejecuta el análisis de video.
-    job_id: Identificador único inyectado por la API para nombrar archivos de forma segura.
+    Ejecuta el análisis de video y genera el reporte PDF final integrando el CSV.
     """
     vision = VisionProcessor(config)
     exporter = ResultsExporter(config)
@@ -19,37 +21,31 @@ def run_tracking_pipeline(config, job_id: str, progress_callback=None):
     ret, first_frame = cap.read()
     
     if not ret:
-        if progress_callback:
-            progress_callback(0, 0, "Error: No se pudo leer el video", None)
+        if progress_callback: progress_callback(0, 0, "Error: No se pudo leer el video", None)
         return
 
     if progress_callback:
         progress_callback(0, total_frames, "Iniciando procesamiento...", None)
     
+    # ... (Toda tu lógica de tracking se mantiene igual) ...
     map_initial = first_frame.copy()
     last_valid_frame = first_frame.copy()
     prev_gray = cv2.cvtColor(first_frame, cv2.COLOR_BGR2GRAY)
     
-    trackers = []
-    all_paths = []
-    track_id_count = 0
-    current_frame = 0
+    trackers, all_paths = [], []
+    track_id_count, current_frame = 0, 0
 
     while True:
         ret, frame = cap.read()
-        if not ret: 
-            break
+        if not ret: break
         
         current_frame += 1
         last_valid_frame = frame 
         curr_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         
         M = vision.get_fast_stabilization_matrix(prev_gray, curr_gray)
-        if M is not None:
-            frame_stab = cv2.warpAffine(frame, M, (frame.shape[1], frame.shape[0]))
-            gray_stab = cv2.warpAffine(curr_gray, M, (frame.shape[1], frame.shape[0]))
-        else:
-            frame_stab, gray_stab = frame, curr_gray
+        frame_stab = cv2.warpAffine(frame, M, (frame.shape[1], frame.shape[0])) if M is not None else frame
+        gray_stab = cv2.warpAffine(curr_gray, M, (frame.shape[1], frame.shape[0])) if M is not None else curr_gray
 
         detections = vision.extract_detections(gray_stab)
 
@@ -68,25 +64,22 @@ def run_tracking_pipeline(config, job_id: str, progress_callback=None):
 
         for i, det in enumerate(detections):
             if i not in assigned_detections:
+                # Nota: Asegúrate que config.ORIGIN_ZONE esté en el formato correcto
                 if cv2.pointPolygonTest(config.ORIGIN_ZONE, (float(det[0]), float(det[1])), False) >= 0:
                     trackers.append(RockTracker(track_id_count, det, config))
                     track_id_count += 1
 
         alive = []
         for i, t in enumerate(trackers):
-            if i not in assigned_trackers: 
-                t.predict_only()
+            if i not in assigned_trackers: t.predict_only()
             pos = t.kalman.statePost
-            if (t.frames_since_seen <= config.MAX_MISSING and 
-                0 < pos[0][0] < frame.shape[1] and 
-                0 < pos[1][0] < frame.shape[0]):
+            if (t.frames_since_seen <= config.MAX_MISSING and 0 < pos[0][0] < frame.shape[1] and 0 < pos[1][0] < frame.shape[0]):
                 alive.append(t)
             elif t.is_confirmed and t.best_valid_path:
                 all_paths.append({'path': t.best_valid_path, 'id': t.id})
         trackers = alive
         prev_gray = gray_stab.copy()
 
-        # Reportamos progreso cada 5 frames
         if progress_callback and current_frame % 5 == 0:
             progress_callback(current_frame, total_frames, "Procesando...", None)
 
@@ -96,18 +89,29 @@ def run_tracking_pipeline(config, job_id: str, progress_callback=None):
         if t.is_confirmed and t.best_valid_path:
             all_paths.append({'path': t.best_valid_path, 'id': t.id})
 
+    # --- GENERACIÓN DE ARCHIVOS FINALES (MODIFICADO) ---
     if progress_callback:
-        progress_callback(total_frames, total_frames, "Generando archivos finales...", None)
+        progress_callback(total_frames, total_frames, "Generando Reporte PDF con Malla de Pozos...", None)
         
-    # Usamos el job_id para asegurar que los archivos son únicos
-    json_output_filename = f"flyrocks_resultados_{job_id}.json"
-    map_start_filename = f"mapa_impactos_inicio_{job_id}.jpg"
-    map_end_filename = f"mapa_impactos_final_{job_id}.jpg"
+    json_out = f"results_{job_id}.json"
+    pdf_out = f"reporte_{job_id}.pdf"
+    
+    # 1. Exportar datos crudos a JSON
+    exporter.export_to_json(all_paths, last_valid_frame.shape, json_out)
+    
+    # 2. LLAMADA CORREGIDA AL GENERADOR DE PDF
+    # Ahora pasamos: (Ruta JSON, Ruta CSV, Ruta PDF de salida)
+    try:
+        generar_pdf_job(
+            json_path=json_out, 
+            csv_path=config.detonation_csv_path, # Proviene del Config cargado en main.py
+            output_pdf=pdf_out, 
+            radio_equipos=250.0
+        )
+    except Exception as e:
+        print(f"Error al generar el PDF: {e}")
+        # Opcionalmente puedes notificar el error aquí
 
-    cv2.imwrite(map_start_filename, exporter.draw_visual_map(map_initial, all_paths))
-    cv2.imwrite(map_end_filename, exporter.draw_visual_map(last_valid_frame, all_paths))
-    exporter.export_to_json(all_paths, last_valid_frame.shape, json_output_filename)
-
-    # Finalizamos pasando la ruta exacta del archivo JSON generado
+    # 3. Finalizar proceso
     if progress_callback:
-        progress_callback(total_frames, total_frames, "Completado", json_output_filename)
+        progress_callback(total_frames, total_frames, "Completado", json_out)
