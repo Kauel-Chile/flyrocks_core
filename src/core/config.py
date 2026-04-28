@@ -10,11 +10,12 @@ class Config:
         # Parámetros base
         self.MIN_FRAMES_TO_CONFIRM = 5  
         self.MIN_AREA = 15        
-        self.MAX_AREA = 2500    
-        self.DIST_THRESH = 350  
-        self.MAX_MISSING = 40   
+        self.MAX_AREA = 500    
+        self.DIST_THRESH = 50  
+        self.MAX_MISSING = 10 
         self.MIN_SOLIDITY = 0.70  
-        self.EDGE_MARGIN = 5 
+        self.EDGE_MARGIN = 5
+        self.MAX_FALL_RATIO = 3.0
         
         self.detonation_csv_path = detonation_csv_path
 

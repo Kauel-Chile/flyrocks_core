@@ -53,13 +53,31 @@ class RockTracker:
         self.history.append(pt)
         self.frames_since_seen += 1
         return pt
-
+    
     def is_physically_valid(self):
         if len(self.history) < 8: return False
         path = np.array(self.history)
+        
+        # 1. Tu lógica original (Magnitud y Tortuosidad)
         displacement = np.linalg.norm(path[-1] - path[0])
         if displacement < self.min_dist: return False
         
         steps = np.diff(path, axis=0)
         total_len = np.sum(np.linalg.norm(steps, axis=1))
-        return (total_len / displacement) <= self.config.MAX_TORTUOSITY
+        if (total_len / displacement) > self.config.MAX_TORTUOSITY: return False
+
+        # 2. VALIDACIÓN DE CAÍDA VERTICAL (El filtro de talud)
+        dy_total = path[-1][1] - path[0][1] # Positivo si terminó más abajo
+        dx_total = abs(path[-1][0] - path[0][0]) # Valor absoluto del mov. lateral
+
+        # Solo evaluamos esto si el objeto terminó más abajo de donde empezó
+        if dy_total > 0:
+            # Evitar división por cero
+            if dx_total == 0: 
+                return False 
+                
+            fall_ratio = dy_total / dx_total
+            if fall_ratio > self.config.MAX_FALL_RATIO:
+                return False
+
+        return True
