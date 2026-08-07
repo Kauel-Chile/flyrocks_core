@@ -1,0 +1,1482 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Flyrocks — Trazado de trayectorias</title>
+<style>
+  :root{
+    --bg:#12141a; --panel:#1b1e26; --line:#2c313d; --txt:#e6e9ef;
+    --dim:#8d95a6; --acc:#4da3ff;
+  }
+  *{box-sizing:border-box; margin:0; padding:0}
+  html,body{height:100%}
+  body{
+    background:var(--bg); color:var(--txt); overflow:hidden;
+    font:13px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif;
+    display:flex; flex-direction:column;
+  }
+
+  /* ---------- barra superior ---------- */
+  header{
+    display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+    padding:9px 14px; background:var(--panel);
+    border-bottom:1px solid var(--line); flex:0 0 auto;
+  }
+  .marca{font-weight:650; letter-spacing:.2px; margin-right:4px}
+  .marca span{color:var(--acc)}
+  .sep{width:1px; height:22px; background:var(--line)}
+  .grupo{display:flex; align-items:center; gap:7px}
+  .grupo > label{color:var(--dim); font-size:12px}
+
+  button{
+    background:#262b36; color:var(--txt); border:1px solid var(--line);
+    border-radius:6px; padding:6px 11px; font:inherit; cursor:pointer;
+  }
+  button:hover{background:#2f3542; border-color:#3d4553}
+  button:active{transform:translateY(1px)}
+  button.pri{background:var(--acc); border-color:var(--acc); color:#08121e; font-weight:600}
+  button.pri:hover{background:#6ab3ff}
+  button:disabled{opacity:.4; cursor:not-allowed; transform:none}
+
+  input[type=range]{width:88px; accent-color:var(--acc)}
+  input[type=color]{
+    width:30px; height:26px; padding:0; border:1px solid var(--line);
+    border-radius:5px; background:none; cursor:pointer;
+  }
+  .val{color:var(--dim); font-variant-numeric:tabular-nums; min-width:30px}
+  .chk{display:flex; align-items:center; gap:5px; color:var(--dim); cursor:pointer}
+
+  /* ---------- barra de ajuste de malla (solo en modo ajuste) ---------- */
+  #barraMalla{
+    display:none; align-items:center; gap:14px; flex-wrap:wrap;
+    padding:7px 14px; background:#171a21;
+    border-bottom:1px solid var(--line); flex:0 0 auto;
+  }
+  body.ajustando #barraMalla{display:flex}
+  #barraMalla .aviso{color:var(--dim); font-size:12px}
+  #barraMalla b{color:var(--txt)}
+
+  /* ---------- lienzo ---------- */
+  #lienzo{position:relative; flex:1 1 auto; overflow:hidden}
+  canvas{display:block; cursor:crosshair}
+  canvas.pan{cursor:grab}
+  body.ajustando canvas{cursor:move}
+
+  /* ---------- leyenda de tiempo de detonación ---------- */
+  #leyenda{
+    position:absolute; left:14px; bottom:14px; display:none;
+    background:rgba(19,22,29,.88); border:1px solid var(--line);
+    border-radius:8px; padding:9px 11px; pointer-events:none;
+    backdrop-filter:blur(3px);
+  }
+  body.cargada.conMalla #leyenda{display:block}
+  #leyenda .tit{font-size:11px; color:var(--dim); margin-bottom:6px}
+  /* rampa ordinal de un solo tono (azul 100→600), validada light→dark */
+  #barraColor{
+    width:186px; height:9px; border-radius:2px;
+    border:1px solid rgba(255,255,255,.14);
+    background:linear-gradient(90deg,#cde2fb,#9ec5f4,#6da7ec,#3987e5,#256abf,#184f95);
+  }
+  #leyenda .ejes{
+    display:flex; justify-content:space-between; margin-top:4px;
+    font-size:11px; color:var(--dim); font-variant-numeric:tabular-nums;
+  }
+
+  #suelta{
+    position:absolute; inset:0; display:flex; flex-direction:column;
+    align-items:center; justify-content:center; gap:12px;
+    text-align:center; padding:24px; pointer-events:none;
+  }
+  #suelta .caja{
+    border:2px dashed #39414f; border-radius:14px; padding:38px 54px;
+    background:rgba(27,30,38,.55);
+  }
+  #suelta h2{font-size:17px; font-weight:600; margin-bottom:6px}
+  #suelta p{color:var(--dim)}
+  #suelta button{pointer-events:auto; margin-top:14px}
+  body.cargada #suelta{display:none}
+  body.arrastrando #suelta .caja{border-color:var(--acc); background:rgba(77,163,255,.10)}
+
+  /* ---------- pie ---------- */
+  footer{
+    display:flex; align-items:center; gap:16px; flex-wrap:wrap;
+    padding:6px 14px; background:var(--panel);
+    border-top:1px solid var(--line); color:var(--dim);
+    font-size:12px; font-variant-numeric:tabular-nums; flex:0 0 auto;
+  }
+  footer b{color:var(--txt); font-weight:600}
+  kbd{
+    background:#262b36; border:1px solid var(--line); border-bottom-width:2px;
+    border-radius:4px; padding:1px 5px; font:inherit; font-size:11px; color:var(--txt);
+  }
+  #ayuda{margin-left:auto; display:flex; gap:10px; align-items:center}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="marca">Flyrocks <span>· Trayectorias</span></div>
+  <div class="sep"></div>
+
+  <div class="grupo">
+    <button id="bAbrir">Abrir máscara…</button>
+    <button id="bEncuadrar" disabled>Encuadrar</button>
+  </div>
+  <div class="sep"></div>
+
+  <div class="grupo">
+    <button id="bFrame" title="Frame del video antes de la tronadura (V)">Frame…</button>
+    <input type="range" id="cMezcla" min="0" max="100" value="0" disabled
+           title="Funde entre la máscara y el frame">
+    <span class="val" id="vMezcla">0</span>
+  </div>
+  <div class="sep"></div>
+
+  <div class="grupo">
+    <label class="chk" title="Malla de tiros proyectada (M)">
+      <input type="checkbox" id="cMalla"> Malla
+    </label>
+    <button id="bAjustar" title="Mover / rotar / escalar la malla">Ajustar…</button>
+  </div>
+  <div class="sep"></div>
+
+  <div class="grupo">
+    <label>Color</label>
+    <input type="color" id="cColor" value="#ff3b30">
+    <label>Grosor</label>
+    <input type="range" id="cGrosor" min="1" max="24" value="6">
+    <span class="val" id="vGrosor">6</span>
+    <label>Opacidad</label>
+    <input type="range" id="cAlfa" min="10" max="100" value="100">
+    <span class="val" id="vAlfa">100</span>
+    <label class="chk"><input type="checkbox" id="cFlecha" checked> Punta</label>
+  </div>
+  <div class="sep"></div>
+
+  <div class="grupo">
+    <label class="chk" title="Asocia la trayectoria a su tiro de origen">
+      <input type="checkbox" id="cAsoc" checked> Origen
+    </label>
+    <label class="chk" title="Prolonga el trazo hasta el pozo de origen">
+      <input type="checkbox" id="cCompletar" checked> al pozo
+    </label>
+    <label title="Apertura de la cuña de búsqueda hacia atrás">Cuña</label>
+    <input type="range" id="cSigma" min="1" max="12" step="0.5" value="4">
+    <span class="val" id="vSigma">4°</span>
+  </div>
+  <div class="sep"></div>
+
+  <div class="grupo">
+    <label title="Realce de la trayectoria en edición. 0 = apagado.">Halo</label>
+    <input type="range" id="cHalo" min="0" max="16" value="2">
+    <span class="val" id="vHalo">2</span>
+  </div>
+  <div class="sep"></div>
+
+  <div class="grupo">
+    <button id="bDeshacer" disabled>Deshacer</button>
+    <button id="bInvertir" disabled title="Invierte el sentido de vuelo (I)">Invertir ⇄</button>
+    <button id="bBorrar" disabled>Borrar</button>
+    <button id="bLimpiar" disabled>Limpiar</button>
+  </div>
+  <div class="sep"></div>
+
+  <div class="grupo">
+    <button id="bPng" disabled>Descargar máscara</button>
+    <button id="bComp" class="pri" disabled>Máscara + trayectorias</button>
+    <button id="bJson" disabled>JSON</button>
+  </div>
+</header>
+
+<div id="barraMalla">
+  <span class="aviso">Ajuste de malla — <b>arrastra</b> para mover · el dibujo está suspendido</span>
+  <div class="sep"></div>
+  <div class="grupo">
+    <label>Giro</label>
+    <input type="range" id="cRot" min="-3" max="3" step="0.02" value="0">
+    <span class="val" id="vRot">0.00°</span>
+  </div>
+  <div class="grupo">
+    <label>Escala</label>
+    <input type="range" id="cEsc" min="94" max="106" step="0.1" value="100">
+    <span class="val" id="vEsc">100.0%</span>
+  </div>
+  <div class="grupo">
+    <span class="aviso">Corrimiento <b id="vDesp">0, 0 px</b></span>
+  </div>
+  <div class="sep"></div>
+  <div class="grupo">
+    <label title="k = z/(h−z). Corrige que el origen visible se vea corrido hacia afuera del nadir.">Paralaje</label>
+    <input type="range" id="cK" min="0" max="15" step="0.5" value="0">
+    <span class="val" id="vK">0.040</span>
+  </div>
+  <div class="grupo">
+    <span class="aviso">Nadir <b id="vNadir">1920, 1080</b> · arrástralo</span>
+  </div>
+  <div class="grupo">
+    <button id="bResetMalla">Restaurar calibración</button>
+    <button id="bCerrarAjuste" class="pri">Listo</button>
+  </div>
+</div>
+
+<div id="lienzo">
+  <canvas id="cv"></canvas>
+
+  <div id="leyenda">
+    <div class="tit">Tiempo de detonación</div>
+    <div id="barraColor"></div>
+    <div class="ejes"><span id="lyIni">0.00 s</span><span id="lyFin">2.77 s</span></div>
+  </div>
+
+  <div id="suelta">
+    <div class="caja">
+      <h2>Arrastra aquí la máscara de intensidad</h2>
+      <p>PNG o JPG · se recomienda <code>out/6_mascaras/1_intensidad.png</code></p>
+      <button id="bAbrir2">Seleccionar archivo…</button>
+    </div>
+  </div>
+</div>
+
+<footer>
+  <span id="estado">Sin imagen</span>
+  <span id="medidas"></span>
+  <div id="ayuda">
+    <span><kbd>clic</kbd> inicio → <kbd>clic</kbd> fin</span>
+    <span><kbd>C</kbd> 2º manejador</span>
+    <span><kbd>I</kbd> invertir</span>
+    <span><kbd>M</kbd> malla</span>
+    <span><kbd>V</kbd> máscara/frame</span>
+    <span><kbd>Supr</kbd> borrar</span>
+    <span><kbd>Ctrl</kbd>+<kbd>Z</kbd></span>
+    <span><kbd>rueda</kbd> zoom · <kbd>espacio</kbd>/<kbd>der</kbd> paneo</span>
+  </div>
+</footer>
+
+<input type="file" id="fArchivo" accept="image/*" hidden>
+<input type="file" id="fFrame" accept="image/*" hidden>
+
+<script>
+"use strict";
+
+// =====================================================================
+// Malla de tiros. La inyecta debug/malla_export.py desde la homografia YA
+// calibrada por pre_tiros.py (RMS 3.19 px, anclada al frame_69): no hay que
+// volver a ajustarla a mano. Va embebida y no en un fetch porque el visor se
+// abre con doble clic (file:// bloquea las peticiones locales).
+// =====================================================================
+/* <<<MALLA_INICIO>>> */
+const MALLA = {"meta":{"fuente_h":"debug/out/7_preproceso/05_tiros/h_matrix.json","rms_px":3.19,"imagen_base":"frame_69","ancho":3840,"alto":2160,"fps":29.97,"frame_inicio":48,"t_min":3000.0,"t_max":5769.0,"centro_mundo":[100691.986460177,99832.51646017701],"A":[[4.055243019633441,7.400167077541995],[7.56419876167065,-4.2211608965661735]],"t":[2026.0012385656592,1107.2322263115202]},"pozos":[{"id":"101","x":-22.846,"y":-33.736,"z":3175.89,"px":1683.7,"py":1076.8,"t":5349.0},{"id":"102","x":-20.296,"y":-29.446,"z":3175.81,"px":1725.8,"py":1078.0,"t":5128.0},{"id":"103","x":-17.736,"y":-25.206,"z":3175.83,"px":1767.5,"py":1079.5,"t":5044.0},{"id":"104","x":-15.206,"y":-20.886,"z":3175.79,"px":1809.8,"py":1080.4,"t":4963.0},{"id":"105","x":-12.616,"y":-16.566,"z":3175.73,"px":1852.2,"py":1081.7,"t":4886.0},{"id":"106","x":-9.996,"y":-12.046,"z":3175.57,"px":1896.3,"py":1082.5,"t":4801.0},{"id":"107","x":-7.386,"y":-7.526,"z":3175.58,"px":1940.4,"py":1083.1,"t":4727.0},{"id":"108","x":-4.636,"y":-2.766,"z":3175.68,"px":1986.7,"py":1083.8,"t":4645.0},{"id":"109","x":-2.746,"y":2.404,"z":3175.81,"px":2032.7,"py":1076.3,"t":4569.0},{"id":"110","x":-0.886,"y":7.574,"z":3175.91,"px":2078.5,"py":1068.6,"t":4479.0},{"id":"111","x":0.974,"y":12.754,"z":3175.76,"px":2124.3,"py":1060.8,"t":4396.0},{"id":"112","x":2.934,"y":17.894,"z":3175.84,"px":2170.3,"py":1053.9,"t":4301.0},{"id":"113","x":4.884,"y":23.034,"z":3175.84,"px":2216.3,"py":1046.9,"t":4212.0},{"id":"114","x":6.844,"y":28.174,"z":3175.85,"px":2262.2,"py":1040.1,"t":4111.0},{"id":"115","x":8.754,"y":33.334,"z":3175.87,"px":2308.2,"py":1032.7,"t":4016.0},{"id":"116","x":10.434,"y":38.564,"z":3175.98,"px":2353.7,"py":1023.4,"t":3921.0},{"id":"117","x":12.104,"y":43.714,"z":3175.9,"px":2398.6,"py":1014.3,"t":3826.0},{"id":"201","x":-5.906,"y":-39.266,"z":3176.93,"px":1711.5,"py":1228.3,"t":4525.0},{"id":"202","x":-3.026,"y":-34.476,"z":3176.48,"px":1758.6,"py":1229.9,"t":4429.0},{"id":"203","x":-0.186,"y":-29.706,"z":3176.46,"px":1805.4,"py":1231.2,"t":4341.0},{"id":"204","x":3.284,"y":-23.806,"z":3176.33,"px":1863.1,"py":1232.6,"t":4221.0},{"id":"205","x":6.844,"y":-17.666,"z":3176.59,"px":1923.0,"py":1233.6,"t":4119.0},{"id":"206","x":10.404,"y":-11.526,"z":3176.24,"px":1982.9,"py":1234.6,"t":3962.0},{"id":"207","x":13.094,"y":-4.976,"z":3176.29,"px":2042.3,"py":1227.3,"t":3857.0},{"id":"208","x":15.484,"y":1.704,"z":3176.63,"px":2101.4,"py":1217.2,"t":3752.0},{"id":"209","x":18.094,"y":8.744,"z":3175.87,"px":2164.1,"py":1207.2,"t":3647.0},{"id":"210","x":20.744,"y":15.754,"z":3175.7,"px":2226.7,"py":1197.6,"t":3542.0},{"id":"211","x":23.434,"y":22.804,"z":3175.89,"px":2289.8,"py":1188.2,"t":3437.0},{"id":"212","x":25.894,"y":29.884,"z":3176.1,"px":2352.1,"py":1177.0,"t":3332.0},{"id":"213","x":28.174,"y":36.914,"z":3176.01,"px":2413.4,"py":1164.5,"t":3227.0},{"id":"301","x":-1.216,"y":-42.476,"z":3176.68,"px":1706.7,"py":1277.3,"t":4317.0},{"id":"302","x":2.464,"y":-36.136,"z":3176.53,"px":1768.6,"py":1278.4,"t":4204.0},{"id":"303","x":6.194,"y":-29.776,"z":3176.52,"px":1830.8,"py":1279.8,"t":4099.0},{"id":"304","x":9.914,"y":-23.656,"z":3176.55,"px":1891.1,"py":1282.1,"t":3945.0},{"id":"305","x":13.534,"y":-17.446,"z":3176.34,"px":1951.8,"py":1283.2,"t":3840.0},{"id":"306","x":16.904,"y":-11.336,"z":3176.19,"px":2010.7,"py":1282.9,"t":3735.0},{"id":"307","x":19.324,"y":-4.636,"z":3176.6,"px":2070.1,"py":1273.0,"t":3630.0},{"id":"308","x":21.694,"y":2.024,"z":3176.6,"px":2128.9,"py":1262.8,"t":3525.0},{"id":"309","x":24.144,"y":8.714,"z":3175.78,"px":2188.4,"py":1253.1,"t":3420.0},{"id":"310","x":26.704,"y":15.314,"z":3175.74,"px":2247.6,"py":1244.6,"t":3315.0},{"id":"311","x":29.244,"y":21.954,"z":3175.96,"px":2307.1,"py":1235.8,"t":3210.0},{"id":"312","x":31.524,"y":28.624,"z":3175.94,"px":2365.7,"py":1224.9,"t":3105.0},{"id":"313","x":33.564,"y":34.874,"z":3176.04,"px":2420.2,"py":1213.9,"t":3000.0},{"id":"501","x":-8.886,"y":-43.356,"z":3176.81,"px":1669.1,"py":1223.0,"t":4719.0},{"id":"502","x":-4.196,"y":-46.516,"z":3176.93,"px":1664.8,"py":1271.8,"t":4509.0},{"id":"601","x":-18.066,"y":-36.846,"z":3176.19,"px":1680.1,"py":1126.1,"t":5139.0},{"id":"602","x":-15.266,"y":-32.156,"z":3176.25,"px":1726.1,"py":1127.5,"t":4944.0},{"id":"603","x":-12.066,"y":-26.736,"z":3176.09,"px":1779.2,"py":1128.8,"t":4834.0},{"id":"604","x":-8.806,"y":-21.286,"z":3175.88,"px":1832.8,"py":1130.5,"t":4653.0},{"id":"605","x":-5.556,"y":-15.736,"z":3175.86,"px":1887.0,"py":1131.6,"t":4553.0},{"id":"606","x":-2.546,"y":-10.546,"z":3175.81,"px":1937.6,"py":1132.5,"t":4448.0},{"id":"607","x":0.454,"y":-5.356,"z":3175.78,"px":1988.2,"py":1133.3,"t":4365.0},{"id":"608","x":2.544,"y":0.264,"z":3175.97,"px":2038.3,"py":1125.4,"t":4333.0},{"id":"609","x":4.564,"y":5.914,"z":3175.96,"px":2088.3,"py":1116.8,"t":4255.0},{"id":"610","x":6.614,"y":11.554,"z":3175.83,"px":2138.3,"py":1108.5,"t":4150.0},{"id":"611","x":8.884,"y":17.514,"z":3175.91,"px":2191.6,"py":1100.5,"t":4056.0},{"id":"612","x":11.154,"y":23.444,"z":3176.03,"px":2244.7,"py":1092.6,"t":3891.0},{"id":"613","x":13.454,"y":29.494,"z":3176.12,"px":2298.8,"py":1084.5,"t":3786.0},{"id":"614","x":15.434,"y":35.564,"z":3176.0,"px":2351.8,"py":1073.9,"t":3681.0},{"id":"615","x":17.354,"y":41.474,"z":3175.99,"px":2403.3,"py":1063.4,"t":3576.0},{"id":"651","x":-13.406,"y":-40.166,"z":3176.7,"px":1674.4,"py":1175.4,"t":4936.0},{"id":"652","x":-10.816,"y":-35.826,"z":3176.42,"px":1717.0,"py":1176.6,"t":4735.0},{"id":"653","x":-8.026,"y":-31.136,"z":3176.35,"px":1763.0,"py":1178.0,"t":4624.0},{"id":"654","x":-5.156,"y":-26.296,"z":3176.17,"px":1810.5,"py":1179.2,"t":4541.0},{"id":"655","x":-2.096,"y":-21.136,"z":3176.08,"px":1861.1,"py":1180.6,"t":4437.0},{"id":"656","x":0.904,"y":-15.946,"z":3176.11,"px":1911.7,"py":1181.4,"t":4349.0},{"id":"657","x":3.914,"y":-10.746,"z":3176.05,"px":1962.3,"py":1182.2,"t":4242.0},{"id":"658","x":6.564,"y":-5.396,"z":3176.06,"px":2012.7,"py":1179.7,"t":4133.0},{"id":"659","x":8.594,"y":0.254,"z":3176.08,"px":2062.7,"py":1171.2,"t":4039.0},{"id":"660","x":10.624,"y":5.904,"z":3176.02,"px":2112.8,"py":1162.7,"t":3979.0},{"id":"661","x":12.704,"y":11.524,"z":3175.89,"px":2162.8,"py":1154.7,"t":3874.0},{"id":"662","x":14.844,"y":17.134,"z":3175.89,"px":2213.0,"py":1147.2,"t":3769.0},{"id":"663","x":16.974,"y":22.744,"z":3176.05,"px":2263.1,"py":1139.6,"t":3664.0},{"id":"664","x":19.114,"y":28.354,"z":3176.02,"px":2313.3,"py":1132.1,"t":3559.0},{"id":"665","x":20.964,"y":34.054,"z":3176.08,"px":2363.0,"py":1122.1,"t":3454.0},{"id":"666","x":22.654,"y":39.374,"z":3175.97,"px":2409.2,"py":1112.4,"t":3349.0},{"id":"701","x":-26.956,"y":-30.876,"z":3175.89,"px":1688.2,"py":1033.7,"t":5512.0},{"id":"702","x":-24.316,"y":-26.256,"z":3175.87,"px":1733.1,"py":1034.1,"t":5357.0},{"id":"703","x":-21.506,"y":-21.566,"z":3175.75,"px":1779.2,"py":1035.6,"t":5250.0},{"id":"704","x":-18.796,"y":-16.806,"z":3175.85,"px":1825.4,"py":1036.0,"t":5157.0},{"id":"705","x":-15.866,"y":-12.106,"z":3175.62,"px":1872.1,"py":1038.3,"t":5070.0},{"id":"706","x":-13.326,"y":-7.196,"z":3175.52,"px":1918.7,"py":1036.8,"t":4971.0},{"id":"707","x":-10.566,"y":-2.436,"z":3175.51,"px":1965.1,"py":1037.6,"t":4878.0},{"id":"708","x":-8.316,"y":2.564,"z":3175.79,"px":2011.2,"py":1033.5,"t":4792.0},{"id":"709","x":-6.336,"y":7.694,"z":3175.85,"px":2057.2,"py":1026.8,"t":4701.0},{"id":"710","x":-4.456,"y":12.844,"z":3175.87,"px":2103.0,"py":1019.3,"t":4611.0},{"id":"711","x":-2.486,"y":17.974,"z":3175.85,"px":2148.9,"py":1012.6,"t":4517.0},{"id":"712","x":-0.536,"y":23.124,"z":3175.63,"px":2194.9,"py":1005.6,"t":4421.0},{"id":"713","x":1.404,"y":28.734,"z":3175.62,"px":2244.3,"py":996.6,"t":4325.0},{"id":"714","x":3.504,"y":34.324,"z":3175.8,"px":2294.2,"py":988.8,"t":4229.0},{"id":"715","x":5.364,"y":40.084,"z":3175.95,"px":2344.4,"py":978.6,"t":4141.0},{"id":"716","x":7.124,"y":45.674,"z":3176.01,"px":2392.9,"py":968.3,"t":4047.0},{"id":"801","x":-29.996,"y":-28.806,"z":3176.09,"px":1691.2,"py":1001.9,"t":5769.0},{"id":"802","x":-28.236,"y":-25.886,"z":3176.13,"px":1719.9,"py":1002.9,"t":5617.0},{"id":"803","x":-26.116,"y":-22.906,"z":3175.93,"px":1750.6,"py":1006.4,"t":5567.0},{"id":"804","x":-24.656,"y":-19.746,"z":3176.01,"px":1779.9,"py":1004.1,"t":5504.0},{"id":"805","x":-22.856,"y":-16.786,"z":3175.91,"px":1809.1,"py":1005.2,"t":5451.0},{"id":"806","x":-21.076,"y":-13.696,"z":3175.74,"px":1839.2,"py":1005.6,"t":5392.0},{"id":"807","x":-19.316,"y":-10.736,"z":3175.65,"px":1868.2,"py":1006.4,"t":5336.0},{"id":"808","x":-17.696,"y":-7.566,"z":3175.67,"px":1898.2,"py":1005.3,"t":5280.0},{"id":"809","x":-15.946,"y":-4.536,"z":3175.61,"px":1927.8,"py":1005.8,"t":5224.0},{"id":"810","x":-14.196,"y":-1.506,"z":3175.75,"px":1957.3,"py":1006.2,"t":5172.0},{"id":"811","x":-12.506,"y":1.554,"z":3175.8,"px":1986.8,"py":1006.1,"t":5112.0},{"id":"812","x":-11.326,"y":4.844,"z":3176.01,"px":2015.9,"py":1001.1,"t":5052.0},{"id":"813","x":-10.146,"y":8.144,"z":3176.06,"px":2045.1,"py":996.1,"t":4986.0},{"id":"814","x":-8.776,"y":11.334,"z":3176.28,"px":2074.3,"py":993.0,"t":4917.0},{"id":"815","x":-7.576,"y":14.664,"z":3176.1,"px":2103.8,"py":988.0,"t":4861.0},{"id":"816","x":-6.246,"y":17.934,"z":3176.18,"px":2133.4,"py":984.3,"t":4809.0},{"id":"817","x":-5.126,"y":21.224,"z":3176.19,"px":2162.3,"py":978.9,"t":4751.0},{"id":"818","x":-3.916,"y":24.504,"z":3176.03,"px":2191.4,"py":974.2,"t":4693.0},{"id":"819","x":-2.606,"y":27.714,"z":3176.03,"px":2220.5,"py":970.5,"t":4637.0},{"id":"820","x":-1.566,"y":31.094,"z":3176.0,"px":2249.7,"py":964.1,"t":4581.0},{"id":"821","x":-0.326,"y":34.364,"z":3175.93,"px":2279.0,"py":959.7,"t":4533.0}]};
+/* <<<MALLA_FIN>>> */
+
+// =====================================================================
+// Estado
+//   Los puntos de cada trayectoria se guardan SIEMPRE en coordenadas de
+//   IMAGEN (px del PNG original, 3840x2160), nunca de pantalla. Asi la
+//   exportacion a resolucion nativa es directa y el zoom no afecta nada.
+//
+//   c1 = manejador principal  -> Bezier cuadratica = parabola exacta
+//   c2 = manejador opcional   -> pasa a cubica (angulos de entrada y
+//        salida independientes, para las parabolas dificiles)
+// =====================================================================
+const S = {
+  img: null, blob: null, nombre: "",
+  ref: null,          // frame del video, como capa de referencia
+  mezcla: 0,          // 0 = solo mascara, 1 = solo frame
+  mezPrev: 1,         // ultimo valor no nulo, para el atajo V
+  W: 0, H: 0,
+  esc: 1, tx: 0, ty: 0,
+  trz: [],            // trayectorias
+  sel: -1,            // indice seleccionada
+  pend: null,         // punto de inicio a la espera del segundo clic
+  raton: null,        // ultima posicion del raton en coords de imagen
+  arr: null,          // arrastre en curso
+  pan: false,         // barra espaciadora presionada
+  hist: [],           // pila de deshacer
+  halo: 2,            // realce de la que se edita, en px de PANTALLA
+};
+
+// Malla: el ajuste fino es una similitud (giro + escala + corrimiento) alrededor
+// del centroide, aplicada SOBRE la proyeccion ya calibrada. No re-resuelve la
+// homografia: la deriva medida del dron es de 18.5 px entre el frame 38 y el 452
+// (ver PENDIENTES §P9), o sea basicamente traslacion. Lo que sobre-corrige una
+// similitud, no lo arregla un afin completo con 4 anclas movidas a ojo.
+const M = {
+  pozos: [],          // {id, px, py, t, u}  px/py = proyeccion original
+  cx: 0, cy: 0,       // centroide de la malla, en px de imagen
+  pxm: 0,             // pixeles por metro
+  ver: false,
+  ajuste: false,      // modo de ajuste activo (suspende el dibujo)
+  aj: { dx: 0, dy: 0, rot: 0, esc: 1 },
+  hover: -1,
+};
+
+// Rampa ORDINAL de un solo tono (azul, pasos 100→600). Validada: lightness
+// monotona, saltos >= 0.06, y el extremo oscuro aguanta 2.59:1 contra el negro
+// de la mascara. Nada de arcoiris tipo JET: inventa bandas donde no las hay.
+const RAMPA = ["#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#256abf", "#184f95"];
+const RGB = RAMPA.map(h => [parseInt(h.slice(1,3),16), parseInt(h.slice(3,5),16),
+                            parseInt(h.slice(5,7),16)]);
+
+function colorTiempo(u){
+  const s = Math.max(0, Math.min(1, u)) * (RGB.length - 1);
+  const i = Math.min(RGB.length - 2, Math.floor(s)), f = s - i;
+  const a = RGB[i], b = RGB[i+1];
+  return `rgb(${Math.round(a[0]+(b[0]-a[0])*f)},${Math.round(a[1]+(b[1]-a[1])*f)},`
+       + `${Math.round(a[2]+(b[2]-a[2])*f)})`;
+}
+
+// Asociacion trayectoria -> pozo de origen.
+//
+// El blast de este video cae a 12.8 m del centro del cuadro, o sea casi bajo el
+// dron. Eso decide el diseno:
+//   - la correccion de paralaje del origen es de segundo orden (2-10 px cerca
+//     del centro, ~20-47 px en el borde de la malla), no el factor dominante;
+//   - el error ANGULAR del trazo si manda: 3 grados a 100 m ya corren un pozo
+//     entero, por eso la tolerancia se abre con la distancia en vez de ser un
+//     radio fijo;
+//   - queda descartado apoyarse en la recta nadir->p0: con el blast en el nadir
+//     es casi colineal con la direccion de vuelo y no aporta nada.
+const AS = {
+  activo: true,
+  // Arranca en 0 a proposito: mientras no este calibrado con datos reales,
+  // corregir con un k inventado mueve el origen sin fundamento y ensucia la
+  // lectura. Con k=0 el origen es exactamente el punto dibujado.
+  k: 0,                       // paralaje: k = z/(h-z)
+  nadir: { x: 1920, y: 1080 },// centro del cuadro; ajustable
+  sigma: 4,                   // tolerancia angular en grados
+  cand: [],                   // candidatos de la trayectoria seleccionada
+  conf: new Map(),            // indice de pozo -> confianza, para pintar
+  mejor: [],                  // por trayectoria: indice del pozo mas plausible
+  completar: true,            // prolongar el trazo hasta el pozo
+};
+
+const TOL = 9;        // tolerancia de click en px de PANTALLA
+
+const cv  = document.getElementById("cv");
+const ctx = cv.getContext("2d");
+const $   = id => document.getElementById(id);
+
+// =====================================================================
+// Transformaciones imagen <-> pantalla
+// =====================================================================
+const aPant = p => ({ x: p.x * S.esc + S.tx, y: p.y * S.esc + S.ty });
+
+function aImg(ev){
+  const r = cv.getBoundingClientRect();
+  return {
+    x: (ev.clientX - r.left - S.tx) / S.esc,
+    y: (ev.clientY - r.top  - S.ty) / S.esc,
+  };
+}
+
+function encuadrar(){
+  if (!S.img) return;
+  const r = cv.getBoundingClientRect();
+  S.esc = Math.min(r.width / S.W, r.height / S.H) * 0.96;
+  S.tx  = (r.width  - S.W * S.esc) / 2;
+  S.ty  = (r.height - S.H * S.esc) / 2;
+  dibujar();
+}
+
+function zoom(f, cx, cy){
+  const r = cv.getBoundingClientRect();
+  const px = cx - r.left, py = cy - r.top;
+  const nueva = Math.min(40, Math.max(0.02, S.esc * f));
+  // el punto bajo el cursor se queda quieto
+  S.tx = px - (px - S.tx) * (nueva / S.esc);
+  S.ty = py - (py - S.ty) * (nueva / S.esc);
+  S.esc = nueva;
+  dibujar();
+}
+
+// =====================================================================
+// Geometria de las curvas
+// =====================================================================
+function puntoEn(t, T){
+  const u = 1 - t;
+  if (T.c2){   // cubica
+    const a = u*u*u, b = 3*u*u*t, c = 3*u*t*t, d = t*t*t;
+    return { x: a*T.p0.x + b*T.c1.x + c*T.c2.x + d*T.p1.x,
+             y: a*T.p0.y + b*T.c1.y + c*T.c2.y + d*T.p1.y };
+  }
+  const a = u*u, b = 2*u*t, c = t*t;   // cuadratica
+  return { x: a*T.p0.x + b*T.c1.x + c*T.p1.x,
+           y: a*T.p0.y + b*T.c1.y + c*T.p1.y };
+}
+
+// Tangente en el extremo final, para orientar la punta de flecha.
+function tangenteFinal(T){
+  const q = T.c2 || T.c1;
+  let dx = T.p1.x - q.x, dy = T.p1.y - q.y;
+  const n = Math.hypot(dx, dy);
+  if (n < 1e-6){ dx = T.p1.x - T.p0.x; dy = T.p1.y - T.p0.y; }
+  const m = Math.hypot(dx, dy) || 1;
+  return { x: dx/m, y: dy/m };
+}
+
+// Distancia minima de un punto a la curva (muestreada).
+function distACurva(p, T){
+  let mejor = Infinity;
+  for (let i = 0; i <= 48; i++){
+    const q = puntoEn(i/48, T);
+    const d = Math.hypot(q.x - p.x, q.y - p.y);
+    if (d < mejor) mejor = d;
+  }
+  return mejor;
+}
+
+function largoCuerda(T){ return Math.hypot(T.p1.x - T.p0.x, T.p1.y - T.p0.y); }
+
+function anguloCuerda(T){
+  // en pantalla el eje Y crece hacia abajo: lo invertimos para que el
+  // angulo se lea como en un plano cartesiano normal
+  const a = Math.atan2(-(T.p1.y - T.p0.y), T.p1.x - T.p0.x) * 180 / Math.PI;
+  return (a + 360) % 360;
+}
+
+// Cuanto se despega la curva de la cuerda, en px de imagen.
+function flecha(T){
+  const m = { x: (T.p0.x + T.p1.x)/2, y: (T.p0.y + T.p1.y)/2 };
+  const c = puntoEn(0.5, T);
+  return Math.hypot(c.x - m.x, c.y - m.y);
+}
+
+// =====================================================================
+// Malla de tiros
+// =====================================================================
+function iniciarMalla(){
+  if (!MALLA || !MALLA.pozos || !MALLA.pozos.length) return;
+  const t0 = MALLA.meta.t_min, t1 = MALLA.meta.t_max, dt = (t1 - t0) || 1;
+  M.pozos = MALLA.pozos.map(p => ({ ...p, u: (p.t - t0) / dt }));
+  M.cx = M.pozos.reduce((s,p) => s + p.px, 0) / M.pozos.length;
+  M.cy = M.pozos.reduce((s,p) => s + p.py, 0) / M.pozos.length;
+
+  // px por metro: raiz del determinante de la parte lineal de la homografia.
+  // Todos los umbrales de la asociacion se escriben en metros y se convierten
+  // aca, para que no queden constantes en pixeles sin significado fisico.
+  const A = MALLA.meta.A;
+  M.pxm = Math.sqrt(Math.abs(A[0][0]*A[1][1] - A[0][1]*A[1][0]));
+
+  $("lyIni").textContent = "0.00 s";
+  $("lyFin").textContent = (dt / 1000).toFixed(2) + " s";
+  $("cMalla").disabled = false;
+  $("bAjustar").disabled = false;
+}
+
+// Proyeccion original + ajuste fino, en coords de IMAGEN.
+function pozoImg(p){
+  const { dx, dy, rot, esc } = M.aj;
+  const x = (p.px - M.cx) * esc, y = (p.py - M.cy) * esc;
+  const co = Math.cos(rot), si = Math.sin(rot);
+  return { x: M.cx + x*co - y*si + dx, y: M.cy + x*si + y*co + dy };
+}
+
+// Los pozos se dibujan en PANTALLA: a 113 marcas, el tamano tiene que ser
+// constante o al alejar se convierten en una mancha y al acercar tapan la
+// mascara. El anillo oscuro no es decorativo: la mascara va de negro a blanco,
+// y sin una referencia local de contraste el paso claro de la rampa se pierde
+// sobre las estelas y el oscuro sobre el fondo.
+// `aPunto` mapea imagen -> destino y `k` escala las marcas: en la vista el
+// destino es la pantalla (k=1, tamano constante); al exportar es la imagen
+// nativa 3840x2160, donde una marca de 4 px seria invisible.
+function pintarMalla(c, aPunto = aPant, k = 1, interactivo = true){
+  if (!M.ver || !M.pozos.length) return;
+  const rotulos = interactivo ? S.esc > 0.55 : true;
+  c.save();
+  c.lineWidth = 1.4 * k;
+  for (let i = 0; i < M.pozos.length; i++){
+    const p = M.pozos[i], q = aPunto(pozoImg(p));
+    const act = interactivo && i === M.hover;
+    const cf = AS.conf.get(i);
+    const r = (act ? 6.5 : 4.2) * k;
+
+    // Candidato: anillo naranja por fuera, con grosor y opacidad segun
+    // confianza. Naranja contra la rampa azul de los pozos son las dos primeras
+    // ranuras categoricas, el par mas separado que hay.
+    if (cf !== undefined){
+      c.save();
+      c.globalAlpha = 0.35 + 0.65 * cf;
+      c.strokeStyle = "#eb6834";
+      c.lineWidth = (1.6 + 3.4 * cf) * k;
+      c.beginPath();
+      c.arc(q.x, q.y, r + (3.5 + 2.5 * cf) * k, 0, 6.2832);
+      c.stroke();
+      c.restore();
+    }
+
+    c.beginPath();
+    c.arc(q.x, q.y, r, 0, 6.2832);
+    c.fillStyle = colorTiempo(p.u);
+    c.fill();
+    c.strokeStyle = act ? "#ffffff" : "rgba(8,10,14,.92)";
+    c.stroke();
+
+    if (rotulos || act){
+      c.font = `${act ? "600 " : ""}${(act ? 13 : 11) * k}px system-ui, sans-serif`;
+      c.textBaseline = "middle";
+      const tx = q.x + r + 4 * k;
+      c.lineWidth = 3 * k;
+      c.strokeStyle = "rgba(8,10,14,.9)";      // realce, para leer sobre estela
+      c.strokeText(p.id, tx, q.y);
+      c.fillStyle = act ? "#ffffff" : "rgba(230,233,239,.82)";
+      c.fillText(p.id, tx, q.y);
+      c.lineWidth = 1.4 * k;
+    }
+  }
+  c.restore();
+}
+
+// Pozo bajo el cursor, en px de PANTALLA para que la tolerancia no cambie con
+// el zoom (los pozos estan a 47 px de imagen entre si).
+// El nadir solo se muestra al ajustar: el resto del tiempo es ruido. Se pinta
+// en PANTALLA para que la cruz no crezca con el zoom.
+function pintarNadir(c){
+  if (!M.ajuste) return;
+  const q = aPant(AS.nadir), R = 16;
+  c.save();
+  c.strokeStyle = "rgba(235,104,52,.95)";
+  c.lineWidth = 1.6;
+  c.beginPath();
+  c.moveTo(q.x - R, q.y); c.lineTo(q.x + R, q.y);
+  c.moveTo(q.x, q.y - R); c.lineTo(q.x, q.y + R);
+  c.stroke();
+  c.beginPath();
+  c.arc(q.x, q.y, 7, 0, 6.2832);
+  c.stroke();
+  c.font = "11px system-ui, sans-serif";
+  c.fillStyle = "rgba(235,104,52,.95)";
+  c.fillText("nadir", q.x + R + 4, q.y + 4);
+  c.restore();
+}
+
+function pozoEn(pImg){
+  if (!M.ver || !M.pozos.length) return -1;
+  const t = 9 / S.esc;
+  let mejor = -1, dm = t;
+  for (let i = 0; i < M.pozos.length; i++){
+    const q = pozoImg(M.pozos[i]);
+    const d = Math.hypot(q.x - pImg.x, q.y - pImg.y);
+    if (d < dm){ dm = d; mejor = i; }
+  }
+  return mejor;
+}
+
+function textoPozo(i){
+  const p = M.pozos[i], m = MALLA.meta;
+  const rel = (p.t - m.t_min) / 1000;
+  const frame = Math.round(m.frame_inicio + rel * m.fps);
+  return `tiro <b>${p.id}</b> · detona <b>${rel.toFixed(3)} s</b> `
+       + `(${p.t.toFixed(0)} ms · frame ${frame}) · cota ${p.z.toFixed(1)} m`;
+}
+
+// =====================================================================
+// Asociacion: de que pozo salio esta trayectoria
+// =====================================================================
+// Devuelve hasta 5 candidatos ordenados, con confianza relativa. El costo tiene
+// dos terminos, ambos adimensionales:
+//   angular  desvio perpendicular medido en "cuantas sigmas de cuna", donde la
+//            cuna se ABRE con la distancia (un error de angulo barre mas lejos)
+//   lejania  penaliza que el pozo quede muy atras: la roca se hace visible
+//            cerca de donde salio, no a 80 m
+function asociar(T){
+  if (!M.pozos.length || !M.pxm) return [];
+  const nx = AS.nadir.x, ny = AS.nadir.y, f = 1 + AS.k;
+
+  // origen corregido de paralaje: el punto visible esta corrido hacia AFUERA
+  const O = { x: nx + (T.p0.x - nx) / f, y: ny + (T.p0.y - ny) / f };
+
+  // direccion hacia atras = opuesta a la tangente inicial de la Bezier
+  let dx = T.p0.x - T.c1.x, dy = T.p0.y - T.c1.y;
+  const n = Math.hypot(dx, dy);
+  if (n < 1e-6) return [];
+  dx /= n; dy /= n;
+
+  const tan  = Math.tan(AS.sigma * Math.PI / 180);
+  const aMin = 15 * M.pxm;   // bajo 15 m el angulo no discrimina nada
+  const aRef = 70 * M.pxm;   // escala de la penalizacion por lejania
+  const aTol = -8 * M.pxm;   // margen para pozos apenas "adelante" del inicio
+
+  const res = [];
+  for (let i = 0; i < M.pozos.length; i++){
+    const q = pozoImg(M.pozos[i]);
+    const vx = q.x - O.x, vy = q.y - O.y;
+    const a = vx*dx + vy*dy;               // avance hacia atras
+    if (a < aTol) continue;                // el pozo quedo adelante: imposible
+    const perp = Math.abs(vx*dy - vy*dx);  // desvio respecto del eje de vuelo
+    const ang = perp / (tan * Math.max(a, aMin));
+    const lej = Math.max(0, a) / aRef;
+    res.push({ i, a, perp, costo: ang*ang + lej*lej });
+  }
+
+  res.sort((A, B) => A.costo - B.costo);
+  const top = res.slice(0, 5);
+  const w = top.map(r => Math.exp(-r.costo / 2));
+  const tot = w.reduce((x, y) => x + y, 0) || 1;
+  top.forEach((r, j) => r.conf = w[j] / tot);
+  return top;
+}
+
+function refrescarAsoc(){
+  AS.cand = [];
+  AS.conf.clear();
+  AS.mejor = [];
+  if (!AS.activo || !M.ver || !M.pozos.length) return;
+
+  // El mejor candidato se calcula para TODAS: el cliente quiere ver el conjunto
+  // de trayectorias naciendo de sus pozos, no solo la que este seleccionada.
+  // Son 113 pozos por trazo, no hace falta cachearlo.
+  AS.mejor = S.trz.map(T => {
+    const c = asociar(T);
+    return c.length ? c[0].i : -1;
+  });
+
+  if (S.sel < 0) return;
+  AS.cand = asociar(S.trz[S.sel]);
+  for (const c of AS.cand) AS.conf.set(c.i, c.conf);
+}
+
+// Tramo que va del pozo al inicio del trazo. Es una Bezier cuadratica cuyo
+// punto de control se apoya en la MISMA tangente con que arranca la curva
+// dibujada, del lado opuesto: asi el empalme en p0 no tiene quiebre y la
+// trayectoria se lee como una sola, no como dos pegadas.
+function tramoOrigen(T, iPozo){
+  if (iPozo < 0) return null;
+  const Q = pozoImg(M.pozos[iPozo]);
+  let tx = T.c1.x - T.p0.x, ty = T.c1.y - T.p0.y;
+  const n = Math.hypot(tx, ty);
+  if (n < 1e-6) return null;
+  tx /= n; ty /= n;
+  const L = Math.hypot(Q.x - T.p0.x, Q.y - T.p0.y);
+  return { Q, C: { x: T.p0.x - tx*L*0.5, y: T.p0.y - ty*L*0.5 } };
+}
+
+// Nivel de respuesta segun cuanto destaque el mejor: pozo / grupo / sector.
+// Prometer un pozo unico cuando la cuna esta abierta es lo que hace que el
+// cliente pueda desmentirte senalando la pantalla.
+function nivelAsoc(){
+  if (!AS.cand.length) return null;
+  const c = AS.cand[0].conf;
+  if (c >= 0.55) return "pozo";
+  if (c >= 0.28) return "grupo";
+  return "sector";
+}
+
+function sincronizarMalla(){
+  document.body.classList.toggle("conMalla", M.ver);
+  $("cMalla").checked = M.ver;
+  $("vRot").textContent = (M.aj.rot * 180 / Math.PI).toFixed(2) + "°";
+  $("vEsc").textContent = (M.aj.esc * 100).toFixed(1) + "%";
+  $("vDesp").textContent = `${M.aj.dx.toFixed(0)}, ${M.aj.dy.toFixed(0)} px`;
+  $("vK").textContent = AS.k.toFixed(3);
+  $("vNadir").textContent = `${AS.nadir.x.toFixed(0)}, ${AS.nadir.y.toFixed(0)}`;
+  $("vSigma").textContent = AS.sigma.toFixed(1) + "°";
+}
+
+// =====================================================================
+// Dibujo
+// =====================================================================
+// Mascara y frame del video en la misma celda. Sobre el terreno seco (un frame
+// anterior al 48, que es donde detona el primer tiro) los pozos se ven como
+// hoyos y el calce de la malla se juzga de una; sobre la mascara acumulada hay
+// que adivinarlo. Fundir en vez de alternar deja comparar sin perder el
+// contexto de las estelas.
+function pintarFondo(c){
+  c.drawImage(S.img, 0, 0);
+  if (S.ref && S.mezcla > 0){
+    c.save();
+    c.globalAlpha = S.mezcla;
+    c.drawImage(S.ref, 0, 0, S.W, S.H);
+    c.restore();
+  }
+}
+
+function trazarCamino(c, T){
+  c.beginPath();
+  c.moveTo(T.p0.x, T.p0.y);
+  if (T.c2) c.bezierCurveTo(T.c1.x, T.c1.y, T.c2.x, T.c2.y, T.p1.x, T.p1.y);
+  else      c.quadraticCurveTo(T.c1.x, T.c1.y, T.p1.x, T.p1.y);
+}
+
+// Pinta las trayectorias en coordenadas de IMAGEN. Sirve igual para la
+// vista (con la transformacion aplicada) y para exportar a tamano nativo.
+function pintarTrz(c, k = 1){
+  for (let idx = 0; idx < S.trz.length; idx++){
+    const T = S.trz[idx];
+    c.save();
+    c.globalAlpha = T.alfa;
+    c.strokeStyle = T.color;
+    c.lineWidth   = T.grosor;
+    c.lineCap     = "round";
+    c.lineJoin    = "round";
+
+    // Tramo reconstruido hasta el pozo: MISMO color, punteado. Otro color lo
+    // haria leer como una entidad distinta; punteado dice "esta parte no se ve
+    // en el video, la puso el sistema" sin romper la unidad de la trayectoria.
+    const tr = AS.completar ? tramoOrigen(T, AS.mejor[idx] ?? -1) : null;
+    if (tr){
+      c.save();
+      c.globalAlpha = T.alfa * 0.85;
+      c.setLineDash([T.grosor * 1.7, T.grosor * 1.5]);
+      c.beginPath();
+      c.moveTo(tr.Q.x, tr.Q.y);
+      c.quadraticCurveTo(tr.C.x, tr.C.y, T.p0.x, T.p0.y);
+      c.stroke();
+      c.setLineDash([]);
+      // marca en el pozo de origen: aro del color de la trayectoria
+      c.lineWidth = Math.max(2 * k, T.grosor * 0.55);
+      c.beginPath();
+      c.arc(tr.Q.x, tr.Q.y, Math.max(7 * k, T.grosor * 1.5), 0, 6.2832);
+      c.stroke();
+      c.restore();
+    }
+
+    trazarCamino(c, T);
+    c.stroke();
+
+    if (T.flecha){
+      const d = tangenteFinal(T);
+      const L = Math.max(9, T.grosor * 3.6);   // largo de las aletas
+      const A = 0.42;                          // apertura en radianes
+      const cs = Math.cos(A), sn = Math.sin(A);
+      const r1 = { x: -d.x*cs + d.y*sn, y: -d.x*sn - d.y*cs };
+      const r2 = { x: -d.x*cs - d.y*sn, y:  d.x*sn - d.y*cs };
+      c.beginPath();
+      c.moveTo(T.p1.x + r1.x*L, T.p1.y + r1.y*L);
+      c.lineTo(T.p1.x, T.p1.y);
+      c.lineTo(T.p1.x + r2.x*L, T.p1.y + r2.y*L);
+      c.stroke();
+    }
+    c.restore();
+  }
+}
+
+// Cuna de retroceso: por donde pudo haber venido la roca. Se abre con la
+// distancia porque el error de angulo del trazo barre mas lejos — dibujarla
+// como un radio fijo mentiria sobre la incertidumbre real.
+// Va en coords de IMAGEN, compensando el zoom en los grosores.
+function pintarCuna(c){
+  if (!AS.activo || !AS.cand.length || S.sel < 0 || !M.ver) return;
+  const T = S.trz[S.sel];
+  const nx = AS.nadir.x, ny = AS.nadir.y, f = 1 + AS.k;
+  const O = { x: nx + (T.p0.x - nx)/f, y: ny + (T.p0.y - ny)/f };
+
+  let dx = T.p0.x - T.c1.x, dy = T.p0.y - T.c1.y;
+  const n = Math.hypot(dx, dy);
+  if (n < 1e-6) return;
+  dx /= n; dy /= n;
+
+  const L = Math.max(...AS.cand.map(r => r.a)) + 25 * M.pxm;
+  const w = Math.tan(AS.sigma * Math.PI / 180) * L;
+  const ex = -dy, ey = dx;                       // perpendicular al eje
+
+  c.save();
+  c.beginPath();
+  c.moveTo(O.x, O.y);
+  c.lineTo(O.x + dx*L + ex*w, O.y + dy*L + ey*w);
+  c.lineTo(O.x + dx*L - ex*w, O.y + dy*L - ey*w);
+  c.closePath();
+  c.fillStyle = "rgba(235,104,52,.10)";
+  c.fill();
+  c.strokeStyle = "rgba(235,104,52,.34)";
+  c.lineWidth = 1 / S.esc;
+  c.stroke();
+
+  // eje de la cuna, hasta el mejor candidato
+  const mejor = pozoImg(M.pozos[AS.cand[0].i]);
+  c.beginPath();
+  c.setLineDash([9 / S.esc, 7 / S.esc]);
+  c.moveTo(O.x, O.y);
+  c.lineTo(mejor.x, mejor.y);
+  c.strokeStyle = "rgba(235,104,52,.85)";
+  c.lineWidth = 1.6 / S.esc;
+  c.stroke();
+  c.setLineDash([]);
+
+  // Origen corregido de paralaje. NO coincide con el inicio del trazo, y esa
+  // diferencia es justamente el dato: el punto visible esta corrido hacia
+  // AFUERA del nadir porque la roca ya habia subido. Se dibuja el segmento
+  // p0 -> O para que se lea como un desplazamiento y no como un punto suelto.
+  const desp = Math.hypot(O.x - T.p0.x, O.y - T.p0.y);
+  if (desp * S.esc > 2.5){
+    c.beginPath();
+    c.moveTo(T.p0.x, T.p0.y);
+    c.lineTo(O.x, O.y);
+    c.strokeStyle = "rgba(235,104,52,.75)";
+    c.lineWidth = 2.2 / S.esc;
+    c.stroke();
+
+    const r = 5 / S.esc;
+    c.beginPath();
+    c.moveTo(O.x - r, O.y); c.lineTo(O.x + r, O.y);
+    c.moveTo(O.x, O.y - r); c.lineTo(O.x, O.y + r);
+    c.strokeStyle = "rgba(235,104,52,.95)";
+    c.lineWidth = 1.8 / S.esc;
+    c.stroke();
+
+    if (S.esc > 0.7){
+      c.font = `${11 / S.esc}px system-ui, sans-serif`;
+      c.fillStyle = "rgba(235,104,52,.95)";
+      c.fillText("origen corregido", O.x + r + 3/S.esc, O.y - 5/S.esc);
+    }
+  }
+  c.restore();
+}
+
+// Halo de la trayectoria en edicion. Va DEBAJO del trazo, asi el color
+// real nunca se tapa: el lienzo sigue siendo una vista fiel de lo que se
+// va a exportar. Y como se dibuja aparte de pintarTrz(), no sale en la
+// imagen exportada.
+// El ancho se compensa por el zoom para que el halo se vea siempre igual
+// de grueso en pantalla, sin importar cuanto te hayas acercado.
+function pintarHalo(c){
+  if (S.sel < 0 || S.halo <= 0) return;
+  const T = S.trz[S.sel];
+  c.save();
+  c.lineCap = "round";
+  c.lineJoin = "round";
+  c.strokeStyle = "#4da3ff";              // mismo azul que los tiradores
+  // Al ensancharlo baja la opacidad, para que siga leyendose como halo y
+  // no como una franja solida encima de la imagen.
+  c.globalAlpha = 0.75 / (1 + S.halo / 5);
+  c.lineWidth = T.grosor + S.halo / S.esc;
+  trazarCamino(c, T);
+  c.stroke();
+  c.restore();
+}
+
+// Nodos y varillas: se dibujan en PANTALLA para que el tamano no cambie
+// con el zoom (si no, a 8x los tiradores tapan la imagen).
+function pintarNodos(c){
+  if (S.sel < 0) return;
+  const T = S.trz[S.sel];
+  const p0 = aPant(T.p0), p1 = aPant(T.p1), c1 = aPant(T.c1);
+  const c2 = T.c2 ? aPant(T.c2) : null;
+
+  c.save();
+  c.setLineDash([4, 4]);
+  c.strokeStyle = "rgba(77,163,255,.85)";
+  c.lineWidth = 1;
+  c.beginPath();
+  if (c2){ c.moveTo(p0.x,p0.y); c.lineTo(c1.x,c1.y); c.moveTo(p1.x,p1.y); c.lineTo(c2.x,c2.y); }
+  else   { c.moveTo(p0.x,p0.y); c.lineTo(c1.x,c1.y); c.lineTo(p1.x,p1.y); }
+  c.stroke();
+  c.setLineDash([]);
+
+  const nodo = (p, relleno, r) => {
+    c.beginPath(); c.arc(p.x, p.y, r, 0, 6.2832);
+    c.fillStyle = relleno; c.fill();
+    c.strokeStyle = "#0d0f14"; c.lineWidth = 1.5; c.stroke();
+  };
+  nodo(c1, "#4da3ff", 5.5);
+  if (c2) nodo(c2, "#4da3ff", 5.5);
+  nodo(p0, "#ffffff", 6);
+  nodo(p1, "#ffd23b", 6);
+  c.restore();
+}
+
+function dibujar(){
+  const dpr = window.devicePixelRatio || 1;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, cv.width / dpr, cv.height / dpr);
+  if (!S.img) return;
+
+  ctx.save();
+  ctx.translate(S.tx, S.ty);
+  ctx.scale(S.esc, S.esc);
+  ctx.imageSmoothingEnabled = S.esc < 1;   // nitidez al acercar
+  pintarFondo(ctx);
+  ctx.restore();
+
+  refrescarAsoc();
+
+  // La cuna va bajo la malla: es la region de busqueda, no un resultado.
+  ctx.save();
+  ctx.translate(S.tx, S.ty);
+  ctx.scale(S.esc, S.esc);
+  pintarCuna(ctx);
+  ctx.restore();
+
+  // La malla va entre la imagen y los trazos: es el terreno, no la anotacion.
+  // Se pinta fuera de la transformacion porque su tamano es de PANTALLA.
+  pintarMalla(ctx);
+
+  ctx.save();
+  ctx.translate(S.tx, S.ty);
+  ctx.scale(S.esc, S.esc);
+  pintarHalo(ctx);      // debajo del trazo
+  pintarTrz(ctx);
+
+  // vista previa mientras se espera el segundo clic
+  if (S.pend && S.raton){
+    ctx.save();
+    ctx.globalAlpha = .55;
+    ctx.strokeStyle = $("cColor").value;
+    ctx.lineWidth = +$("cGrosor").value;
+    ctx.setLineDash([10 / S.esc, 8 / S.esc]);
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(S.pend.x, S.pend.y);
+    ctx.lineTo(S.raton.x, S.raton.y);
+    ctx.stroke();
+    ctx.restore();
+  }
+  ctx.restore();
+
+  pintarNadir(ctx);
+  pintarNodos(ctx);
+  actualizarPie();
+}
+
+function redimensionar(){
+  const r = cv.parentElement.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  cv.width  = Math.round(r.width  * dpr);
+  cv.height = Math.round(r.height * dpr);
+  cv.style.width  = r.width  + "px";
+  cv.style.height = r.height + "px";
+  dibujar();
+}
+
+// =====================================================================
+// Interfaz
+// =====================================================================
+function actualizarPie(){
+  const e = [];
+  if (S.img) e.push(`${S.W}×${S.H}`, `zoom ${(S.esc*100).toFixed(0)}%`);
+  e.push(`${S.trz.length} trayectoria${S.trz.length === 1 ? "" : "s"}`);
+  if (M.ver) e.push(`${M.pozos.length} tiros`);
+  $("estado").textContent = e.join("  ·  ");
+
+  // El pozo bajo el cursor manda: es efimero y es lo que se esta mirando.
+  if (M.hover >= 0){
+    $("medidas").innerHTML = textoPozo(M.hover);
+    actualizarBotones();
+    return;
+  }
+
+  if (S.sel >= 0){
+    const T = S.trz[S.sel];
+    const partes = [
+      `<b>largo</b> ${(M.pxm ? largoCuerda(T)/M.pxm : largoCuerda(T)).toFixed(0)}` +
+      (M.pxm ? " m" : " px"),
+      `<b>ángulo</b> ${anguloCuerda(T).toFixed(1)}°`,
+      `<b>${T.c2 ? "cúbica" : "cuadrática"}</b>`,
+    ];
+    const niv = nivelAsoc();
+    if (niv && M.pxm){
+      // cuanto corrio el paralaje el origen: si es del orden de la separacion
+      // entre pozos (5.45 m), k esta mandando el resultado
+      const nx = AS.nadir.x, ny = AS.nadir.y, f = 1 + AS.k;
+      const d = Math.hypot(T.p0.x - nx, T.p0.y - ny) * (1 - 1/f) / M.pxm;
+      partes.push(`<b>paralaje</b> ${d.toFixed(1)} m`);
+    }
+    if (niv){
+      const etq = { pozo: "origen", grupo: "origen probable", sector: "zona" }[niv];
+      const lista = AS.cand
+        .filter(r => r.conf >= 0.06)
+        .slice(0, niv === "pozo" ? 3 : 4)
+        .map((r, j) => `${j === 0 ? "<b>" : ""}${M.pozos[r.i].id}` +
+                       `${j === 0 ? "</b>" : ""} ${(r.conf*100).toFixed(0)}%`)
+        .join(" · ");
+      partes.push(`${etq}: ${lista}`);
+    }
+    $("medidas").innerHTML = partes.join("  ·  ");
+  } else {
+    $("medidas").textContent = S.pend ? "clic en el punto final…" : "";
+  }
+  actualizarBotones();
+}
+
+function actualizarBotones(){
+  const hay = S.trz.length > 0;
+  $("bDeshacer").disabled = S.hist.length === 0;
+  $("bInvertir").disabled = S.sel < 0;
+  $("bBorrar").disabled   = S.sel < 0;
+  $("bLimpiar").disabled  = !hay;
+  $("bComp").disabled = $("bJson").disabled = !(S.img && hay);
+}
+
+function sincronizarControles(){
+  if (S.sel < 0) return;
+  const T = S.trz[S.sel];
+  $("cColor").value    = T.color;
+  $("cGrosor").value   = T.grosor;  $("vGrosor").textContent = T.grosor;
+  $("cAlfa").value     = Math.round(T.alfa * 100);
+  $("vAlfa").textContent = Math.round(T.alfa * 100);
+  $("cFlecha").checked = T.flecha;
+}
+
+// =====================================================================
+// Historial
+// =====================================================================
+function marcar(){
+  S.hist.push(JSON.stringify(S.trz));
+  if (S.hist.length > 60) S.hist.shift();
+}
+
+function deshacer(){
+  if (!S.hist.length) return;
+  S.trz = JSON.parse(S.hist.pop());
+  if (S.sel >= S.trz.length) S.sel = S.trz.length - 1;
+  S.pend = null;
+  dibujar();
+}
+
+// Da vuelta el sentido de vuelo. Se invierte la trayectoria COMPLETA, no
+// solo la punta de flecha: si no, el JSON exportaria como "inicio" lo que
+// en realidad es el final, y la direccion es un dato fisico.
+// Cubica: (p0,c1,c2,p1) -> (p1,c2,c1,p0).  Cuadratica: c1 no se mueve.
+// La curva dibujada queda identica; cambia solo su recorrido.
+function invertir(){
+  if (S.sel < 0) return;
+  marcar();
+  const T = S.trz[S.sel];
+  [T.p0, T.p1] = [T.p1, T.p0];
+  if (T.c2) [T.c1, T.c2] = [T.c2, T.c1];
+  dibujar();
+}
+
+// =====================================================================
+// Carga de la imagen
+// =====================================================================
+function cargar(file){
+  if (!file || !file.type.startsWith("image/")) return;
+  const url = URL.createObjectURL(file);
+  const im = new Image();
+  im.onload = () => {
+    S.img = im; S.blob = file; S.nombre = file.name;
+    S.W = im.naturalWidth; S.H = im.naturalHeight;
+    // El nadir arranca en el centro del cuadro: es la mejor suposicion para una
+    // toma cenital, y no hay dato de telemetria que lo mejore (la altura del
+    // DJI es relativa al despegue, que en un rajo esta en otra cota).
+    AS.nadir = { x: S.W / 2, y: S.H / 2 };
+    sincronizarMalla();
+    document.body.classList.add("cargada");
+    $("bEncuadrar").disabled = $("bPng").disabled = false;
+    encuadrar();
+  };
+  im.onerror = () => alert("No se pudo leer la imagen.");
+  im.src = url;
+}
+
+// La capa de referencia se carga aparte y NO define el encuadre: la maestra es
+// siempre la mascara. Si el frame viniera de otra resolucion, se estira a la de
+// ella (misma escena, mismo encuadre) en vez de romper las coordenadas.
+function cargarRef(file){
+  if (!file || !file.type.startsWith("image/")) return;
+  if (!S.img){ alert("Primero carga la máscara."); return; }
+  const im = new Image();
+  im.onload = () => {
+    S.ref = im;
+    $("cMezcla").disabled = false;
+    if (S.mezcla === 0) fijarMezcla(1);       // al cargarlo, mostrarlo
+    else dibujar();
+  };
+  im.onerror = () => alert("No se pudo leer el frame.");
+  im.src = URL.createObjectURL(file);
+}
+
+function fijarMezcla(v){
+  S.mezcla = Math.max(0, Math.min(1, v));
+  if (S.mezcla > 0) S.mezPrev = S.mezcla;
+  $("cMezcla").value = Math.round(S.mezcla * 100);
+  $("vMezcla").textContent = Math.round(S.mezcla * 100);
+  dibujar();
+}
+
+$("fArchivo").addEventListener("change", e => cargar(e.target.files[0]));
+$("fFrame").addEventListener("change", e => cargarRef(e.target.files[0]));
+$("bAbrir").onclick = $("bAbrir2").onclick = () => $("fArchivo").click();
+$("bFrame").onclick = () => $("fFrame").click();
+$("cMezcla").oninput = e => fijarMezcla(+e.target.value / 100);
+$("bEncuadrar").onclick = encuadrar;
+
+["dragenter","dragover"].forEach(t => document.addEventListener(t, e => {
+  e.preventDefault(); document.body.classList.add("arrastrando");
+}));
+["dragleave","drop"].forEach(t => document.addEventListener(t, e => {
+  e.preventDefault();
+  if (t === "drop" || e.target === document.documentElement)
+    document.body.classList.remove("arrastrando");
+}));
+document.addEventListener("drop", e => {
+  if (e.dataTransfer.files.length) cargar(e.dataTransfer.files[0]);
+});
+
+// =====================================================================
+// Raton
+// =====================================================================
+function agarrar(p){
+  const t = TOL / S.esc;              // tolerancia en px de imagen
+  if (S.sel >= 0){                     // los nodos de la seleccionada mandan
+    const T = S.trz[S.sel];
+    const orden = T.c2 ? ["c1","c2","p0","p1"] : ["c1","p0","p1"];
+    for (const k of orden)
+      if (Math.hypot(T[k].x - p.x, T[k].y - p.y) <= t)
+        return { tipo: "nodo", i: S.sel, k };
+  }
+  for (let i = S.trz.length - 1; i >= 0; i--)   // si no, seleccionar curva
+    if (distACurva(p, S.trz[i]) <= Math.max(t, S.trz[i].grosor))
+      return { tipo: "curva", i };
+  return null;
+}
+
+cv.addEventListener("mousedown", e => {
+  if (!S.img) return;
+  const p = aImg(e);
+
+  if (e.button === 2 || e.button === 1 || S.pan){       // paneo
+    S.arr = { tipo: "pan", x: e.clientX, y: e.clientY, tx: S.tx, ty: S.ty };
+    cv.classList.add("pan");
+    return;
+  }
+  if (e.button !== 0) return;
+
+  // En modo ajuste el dibujo queda suspendido: el arrastre mueve la malla.
+  // Si no, cada intento de encajar la malla dejaria una trayectoria basura.
+  if (M.ajuste){
+    // el nadir manda sobre la malla si el clic cae encima de su cruz
+    const nq = aPant(AS.nadir), r = cv.getBoundingClientRect();
+    if (Math.hypot(nq.x - (e.clientX - r.left), nq.y - (e.clientY - r.top)) <= 14)
+      S.arr = { tipo: "nadir" };
+    else
+      S.arr = { tipo: "malla", x: e.clientX, y: e.clientY,
+                dx: M.aj.dx, dy: M.aj.dy };
+    return;
+  }
+
+  const h = agarrar(p);
+  if (h && h.tipo === "nodo"){
+    marcar();
+    S.arr = { tipo: "nodo", i: h.i, k: h.k };
+    return;
+  }
+  if (h && h.tipo === "curva"){
+    S.sel = h.i; S.pend = null;
+    sincronizarControles(); dibujar();
+    return;
+  }
+
+  if (!S.pend){                       // primer clic: punto de inicio
+    S.pend = p; S.sel = -1;
+  } else {                            // segundo clic: punto final
+    marcar();
+    S.trz.push({
+      p0: S.pend,
+      p1: p,
+      c1: { x: (S.pend.x + p.x) / 2, y: (S.pend.y + p.y) / 2 },
+      c2: null,
+      color:  $("cColor").value,
+      grosor: +$("cGrosor").value,
+      alfa:   +$("cAlfa").value / 100,
+      flecha: $("cFlecha").checked,
+    });
+    S.sel = S.trz.length - 1;
+    S.pend = null;
+  }
+  dibujar();
+});
+
+cv.addEventListener("mousemove", e => {
+  if (!S.img) return;
+  S.raton = aImg(e);
+
+  if (S.arr){
+    if (S.arr.tipo === "pan"){
+      S.tx = S.arr.tx + (e.clientX - S.arr.x);
+      S.ty = S.arr.ty + (e.clientY - S.arr.y);
+    } else if (S.arr.tipo === "nadir"){
+      AS.nadir = { x: S.raton.x, y: S.raton.y };
+      sincronizarMalla();
+    } else if (S.arr.tipo === "malla"){
+      // el corrimiento se guarda en px de IMAGEN: el zoom no debe cambiarlo
+      M.aj.dx = S.arr.dx + (e.clientX - S.arr.x) / S.esc;
+      M.aj.dy = S.arr.dy + (e.clientY - S.arr.y) / S.esc;
+      sincronizarMalla();
+    } else {
+      const T = S.trz[S.arr.i];
+      const d = S.raton;
+      if (S.arr.k === "p0" || S.arr.k === "p1"){
+        // al mover un extremo, los manejadores lo acompanan para que la
+        // curva no se deforme de golpe
+        const v = { x: d.x - T[S.arr.k].x, y: d.y - T[S.arr.k].y };
+        if (S.arr.k === "p0"){ T.c1.x += v.x/2; T.c1.y += v.y/2; }
+        else if (T.c2)       { T.c2.x += v.x/2; T.c2.y += v.y/2; }
+        else                 { T.c1.x += v.x/2; T.c1.y += v.y/2; }
+      }
+      T[S.arr.k] = { x: d.x, y: d.y };   // copia: S.raton se reutiliza
+    }
+    dibujar();
+    return;
+  }
+
+  const h = pozoEn(S.raton);
+  if (h !== M.hover){ M.hover = h; dibujar(); return; }
+
+  if (S.pend) dibujar();
+});
+
+cv.addEventListener("mouseleave", () => {
+  if (M.hover >= 0){ M.hover = -1; dibujar(); }
+});
+
+addEventListener("mouseup", () => { S.arr = null; cv.classList.remove("pan"); });
+cv.addEventListener("contextmenu", e => e.preventDefault());
+
+cv.addEventListener("wheel", e => {
+  if (!S.img) return;
+  e.preventDefault();
+  zoom(e.deltaY < 0 ? 1.15 : 1/1.15, e.clientX, e.clientY);
+}, { passive: false });
+
+// =====================================================================
+// Teclado
+// =====================================================================
+addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT") return;
+
+  if (e.code === "Space" && !S.pan){ S.pan = true; cv.classList.add("pan"); e.preventDefault(); }
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z"){ e.preventDefault(); deshacer(); }
+
+  if (e.key === "Escape"){ S.pend = null; S.sel = -1; dibujar(); }
+
+  if ((e.key === "Delete" || e.key === "Backspace") && S.sel >= 0){
+    e.preventDefault(); marcar();
+    S.trz.splice(S.sel, 1); S.sel = -1; dibujar();
+  }
+
+  // C: alterna el segundo manejador de la trayectoria seleccionada.
+  // Con dos manejadores los angulos de entrada y salida son
+  // independientes (parabolas asimetricas, con arrastre del aire).
+  if (e.key.toLowerCase() === "c" && S.sel >= 0){
+    marcar();
+    const T = S.trz[S.sel];
+    if (T.c2){
+      // reduccion de grado: Q = (3(c1+c2) - p0 - p1) / 4. Es la inversa
+      // exacta de la elevacion de abajo, asi que ida y vuelta no deforma.
+      T.c1 = { x: (3*(T.c1.x + T.c2.x) - T.p0.x - T.p1.x) / 4,
+               y: (3*(T.c1.y + T.c2.y) - T.p0.y - T.p1.y) / 4 };
+      T.c2 = null;
+    } else {
+      // elevacion de grado EXACTA: la cubica resultante es la misma curva,
+      // pixel por pixel. Solo aparecen dos brazos donde habia uno.
+      const q = T.c1;
+      T.c1 = { x: T.p0.x + 2/3*(q.x - T.p0.x), y: T.p0.y + 2/3*(q.y - T.p0.y) };
+      T.c2 = { x: T.p1.x + 2/3*(q.x - T.p1.x), y: T.p1.y + 2/3*(q.y - T.p1.y) };
+    }
+    dibujar();
+  }
+
+  if (e.key.toLowerCase() === "i" && S.sel >= 0) invertir();
+
+  if (e.key === "f" || e.key === "F") encuadrar();
+
+  // V alterna mascara <-> frame de un golpe: el parpadeo es lo que deja ver si
+  // la malla esta corrida, mucho mejor que un fundido a medias.
+  if (e.key.toLowerCase() === "v" && S.ref){
+    fijarMezcla(S.mezcla > 0 ? 0 : S.mezPrev);
+  }
+
+  if (e.key.toLowerCase() === "m" && M.pozos.length){
+    M.ver = !M.ver;
+    if (!M.ver) salirAjuste();
+    sincronizarMalla(); dibujar();
+  }
+});
+
+addEventListener("keyup", e => {
+  if (e.code === "Space"){ S.pan = false; cv.classList.remove("pan"); }
+});
+
+// =====================================================================
+// Controles de estilo (aplican a la seleccionada; si no hay, al proximo)
+// =====================================================================
+function estilo(campo, valor){
+  if (S.sel < 0) return;
+  S.trz[S.sel][campo] = valor;
+  dibujar();
+}
+
+// Un solo punto de deshacer por gesto: se marca al agarrar el control,
+// no en cada evento del deslizador (si no, el historial se satura).
+for (const id of ["cColor","cGrosor","cAlfa"])
+  $(id).addEventListener("pointerdown", () => { if (S.sel >= 0) marcar(); });
+
+$("cColor").oninput  = e => estilo("color", e.target.value);
+$("cGrosor").oninput = e => { $("vGrosor").textContent = e.target.value; estilo("grosor", +e.target.value); };
+$("cAlfa").oninput   = e => { $("vAlfa").textContent = e.target.value; estilo("alfa", +e.target.value/100); };
+$("cFlecha").onchange= e => { if (S.sel >= 0) marcar(); estilo("flecha", e.target.checked); };
+
+// El halo es una preferencia de VISTA, no del dibujo: no entra al
+// historial ni se exporta, y vale para todas las trayectorias.
+$("cHalo").oninput = e => {
+  S.halo = +e.target.value;
+  $("vHalo").textContent = e.target.value;
+  dibujar();
+};
+
+$("bDeshacer").onclick = deshacer;
+$("bInvertir").onclick = invertir;
+$("bBorrar").onclick = () => {
+  if (S.sel < 0) return;
+  marcar(); S.trz.splice(S.sel, 1); S.sel = -1; dibujar();
+};
+$("bLimpiar").onclick = () => {
+  if (!S.trz.length) return;
+  if (!confirm(`¿Borrar las ${S.trz.length} trayectorias?`)) return;
+  marcar(); S.trz = []; S.sel = -1; dibujar();
+};
+
+// =====================================================================
+// Controles de la malla
+// =====================================================================
+$("cMalla").onchange = e => {
+  M.ver = e.target.checked;
+  if (!M.ver) salirAjuste();
+  sincronizarMalla(); dibujar();
+};
+
+function salirAjuste(){
+  M.ajuste = false;
+  document.body.classList.remove("ajustando");
+}
+
+$("bAjustar").onclick = () => {
+  if (!M.pozos.length) return;
+  M.ajuste = !M.ajuste;
+  if (M.ajuste){
+    M.ver = true;                 // ajustar a ciegas no tiene sentido
+    S.pend = null; S.sel = -1;    // sin trazo a medias al entrar
+    document.body.classList.add("ajustando");
+  } else salirAjuste();
+  sincronizarMalla(); dibujar();
+};
+
+$("bCerrarAjuste").onclick = () => { salirAjuste(); dibujar(); };
+
+$("cRot").oninput = e => {
+  M.aj.rot = +e.target.value * Math.PI / 180;
+  sincronizarMalla(); dibujar();
+};
+$("cEsc").oninput = e => {
+  M.aj.esc = +e.target.value / 100;
+  sincronizarMalla(); dibujar();
+};
+
+$("cK").oninput = e => {
+  AS.k = +e.target.value / 100;
+  sincronizarMalla(); dibujar();
+};
+
+$("cAsoc").onchange = e => { AS.activo = e.target.checked; dibujar(); };
+$("cCompletar").onchange = e => { AS.completar = e.target.checked; dibujar(); };
+$("cSigma").oninput = e => {
+  AS.sigma = +e.target.value;
+  sincronizarMalla(); dibujar();
+};
+
+$("bResetMalla").onclick = () => {
+  M.aj = { dx: 0, dy: 0, rot: 0, esc: 1 };
+  AS.nadir = { x: S.W / 2 || 1920, y: S.H / 2 || 1080 };
+  $("cRot").value = 0; $("cEsc").value = 100;
+  sincronizarMalla(); dibujar();
+};
+
+// =====================================================================
+// Exportacion
+// =====================================================================
+function bajar(blob, nombre){
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = nombre;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+
+const base = () => (S.nombre || "mascara").replace(/\.[^.]+$/, "");
+
+// La original se entrega tal cual: los bytes del archivo, sin recodificar.
+$("bPng").onclick = () => S.blob && bajar(S.blob, S.nombre);
+
+// Compuesta a resolucion NATIVA (3840x2160), no a la de pantalla.
+// Sale lo que se ve: si la malla esta encendida, va en el PNG.
+$("bComp").onclick = () => {
+  const off = document.createElement("canvas");
+  off.width = S.W; off.height = S.H;
+  const c = off.getContext("2d");
+  pintarFondo(c);
+  pintarMalla(c, p => p, 2.6, false);
+  pintarTrz(c, 2.6);
+  off.toBlob(b => bajar(b, `${base()}_trayectorias.png`), "image/png");
+};
+
+// Las trayectorias como DATOS, en coordenadas de imagen: reutilizables
+// aguas abajo (mismo patron que h_matrix.json / capas_params.json).
+$("bJson").onclick = () => {
+  // La asociacion se recalcula por trayectoria al exportar: en pantalla solo
+  // vive la de la seleccionada.
+  const asocDe = T => {
+    if (!AS.activo || !M.pozos.length) return null;
+    const cand = asociar(T);
+    if (!cand.length) return null;
+    const c0 = cand[0].conf;
+    const Q = pozoImg(M.pozos[cand[0].i]);
+    return {
+      nivel: c0 >= 0.55 ? "pozo" : c0 >= 0.28 ? "grupo" : "sector",
+      // posicion del pozo elegido, para poder redibujar el tramo reconstruido
+      punto_px: [Math.round(Q.x), Math.round(Q.y)],
+      candidatos: cand.filter(r => r.conf >= 0.06).map(r => ({
+        tiro: M.pozos[r.i].id,
+        confianza: +r.conf.toFixed(3),
+        detonacion_ms: M.pozos[r.i].t,
+        distancia_m: +(r.a / M.pxm).toFixed(1),
+      })),
+    };
+  };
+
+  const datos = {
+    imagen: S.nombre,
+    ancho: S.W, alto: S.H,
+    sistema: "pixeles de imagen, origen arriba-izquierda",
+    creado: new Date().toISOString(),
+    asociacion: M.pozos.length ? {
+      malla: MALLA.meta.fuente_h,
+      nadir: [Math.round(AS.nadir.x), Math.round(AS.nadir.y)],
+      paralaje_k: AS.k,
+      cuna_grados: AS.sigma,
+      ajuste_malla: { ...M.aj, rot_grados: +(M.aj.rot*180/Math.PI).toFixed(3) },
+      advertencia: "asociacion SOLO geometrica (2D). Sin tiempo de vuelo no "
+                 + "discrimina pozos vecinos: separacion 5.45 m vs error angular "
+                 + "de ~1 pozo a 100 m.",
+    } : null,
+    trayectorias: S.trz.map((T, i) => ({
+      id: i + 1,
+      tipo: T.c2 ? "bezier_cubica" : "bezier_cuadratica",
+      inicio: [Math.round(T.p0.x), Math.round(T.p0.y)],
+      fin:    [Math.round(T.p1.x), Math.round(T.p1.y)],
+      control: T.c2
+        ? [[Math.round(T.c1.x), Math.round(T.c1.y)], [Math.round(T.c2.x), Math.round(T.c2.y)]]
+        : [[Math.round(T.c1.x), Math.round(T.c1.y)]],
+      largo_cuerda_px: +largoCuerda(T).toFixed(1),
+      largo_cuerda_m:  M.pxm ? +(largoCuerda(T)/M.pxm).toFixed(1) : null,
+      angulo_grados:   +anguloCuerda(T).toFixed(2),
+      curvatura_px:    +flecha(T).toFixed(1),
+      origen: asocDe(T),
+      estilo: { color: T.color, grosor: T.grosor, opacidad: T.alfa, punta: T.flecha },
+    })),
+  };
+  bajar(new Blob([JSON.stringify(datos, null, 2)], { type: "application/json" }),
+        `${base()}_trayectorias.json`);
+};
+
+// =====================================================================
+addEventListener("resize", redimensionar);
+
+$("cMalla").disabled = $("bAjustar").disabled = true;
+iniciarMalla();
+if (M.pozos.length){ M.ver = true; sincronizarMalla(); }
+redimensionar();
+</script>
+</body>
+</html>

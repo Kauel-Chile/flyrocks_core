@@ -1,0 +1,25 @@
+# Lo pesado no va a git: el video del cliente (435 MB) y las salidas del
+# pipeline (1.8 GB) son insumos y derivados, reproducibles o reenviables.
+#
+# Lo que SI se versiona es lo caro de reproducir: el codigo, los documentos y
+# las CALIBRACIONES. `out/` esta ignorado, pero h_matrix.json se agrego con
+# `git add -f` porque son 47 lineas que costaron una sesion de clicks y de las
+# que cuelga toda la asociacion (demo/malla.json se deriva de el).
+*.mp4
+*.zip
+out/
+__pycache__/
+
+# PNG sueltos en la raiz de debug/: son volcados de trabajo, no fuentes.
+# (demo/ no tiene imagenes: el visor lleva la malla embebida en el HTML.)
+/*.png
+
+# Presentaciones: 72 MB de pptx y jpg. Son entregables de reunion, no fuentes,
+# y en git quedarian para siempre. El generador (build_ppt.py) si se versiona.
+ppt/*.pptx
+ppt/_assets/
+ppt/*.jpg
+ppt/*.png
+
+# El visor SI va, aunque el .gitignore raiz excluya *.html: es el entregable.
+# Se agrego con `git add -f`.
