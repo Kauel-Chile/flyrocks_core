@@ -6,6 +6,7 @@ from fastapi import FastAPI, BackgroundTasks, WebSocket, WebSocketDisconnect, Fi
 from sqlmodel import SQLModel, Session
 from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from utils.database import engine, Job
 from utils.services import run_pipeline_task
@@ -23,6 +24,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="API de Análisis Flyrocks", lifespan=lifespan)
 
+app.mount("/temp_videos", StaticFiles(directory="temp_videos"), name="temp_videos")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # En desarrollo permitimos todo. En prod, pones la URL de tu front
@@ -39,7 +42,10 @@ async def start_analysis(
     video: UploadFile = File(...),
     origin_zone: str = Form(...),
     expected_projection_zone: str = Form(...),
-    h_matrix: str = Form(...)
+    h_matrix: str = Form(...),
+    percentile: float = Form(..., ge=0.0, le=100.0),
+    sigma: float = Form(..., ge=0.0, le=1.0),
+    esp: float = Form(..., ge=1.0, le=7.0)
 ):
     # 1. Parsear y validar los strings JSON que vienen del form
     try:
@@ -71,6 +77,9 @@ async def start_analysis(
         origin_zone_parsed, 
         expected_zone_parsed, 
         h_matrix_parsed,
+        percentile,
+        sigma,
+        esp,    
         output_filename="voladura_analisis.mp4"  
     )
     
