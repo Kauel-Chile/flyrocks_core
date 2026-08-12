@@ -8,23 +8,26 @@ from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from utils.database import engine, Job
-from utils.services import run_pipeline_task
+from utils.database import engine, Job, migrar
+from utils.services import run_pipeline_task, TEMP_VIDEOS
 
-# Aseguramos que exista una carpeta para guardar los videos que suba el usuario
-os.makedirs("temp_videos", exist_ok=True)
+# Los videos y los JSON de resultado van bajo DATA_DIR, que es el directorio
+# montado como volumen. La URL publica sigue siendo /temp_videos para no
+# romper al frontend, que ya la usa para leer la mascara de cambios.
+os.makedirs(TEMP_VIDEOS, exist_ok=True)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("Inicializando recursos de la aplicación...")
     SQLModel.metadata.create_all(engine)
+    migrar()   # columnas nuevas sobre una base que ya existe
     yield 
     print("Apagando la aplicación y liberando recursos...")
     engine.dispose()
 
 app = FastAPI(title="API de Análisis Flyrocks", lifespan=lifespan)
 
-app.mount("/temp_videos", StaticFiles(directory="temp_videos"), name="temp_videos")
+app.mount("/temp_videos", StaticFiles(directory=TEMP_VIDEOS), name="temp_videos")
 
 app.add_middleware(
     CORSMiddleware,
@@ -57,13 +60,23 @@ async def start_analysis(
 
     # 2. Guardar el archivo de video temporalmente en disco
     # Esto es necesario porque run_pipeline_task probablemente necesite un 'path' físico
-    video_path = f"temp_videos/{video.filename}"
+    video_path = f"{TEMP_VIDEOS}/{video.filename}"
     with open(video_path, "wb") as buffer:
         shutil.copyfileobj(video.file, buffer)
 
-    # 3. Creamos el registro en la DB
+    # 3. Creamos el registro en la DB, guardando CON QUÉ se corrió.
+    # Sin esto el análisis queda huérfano de su contexto: se puede saber qué
+    # trayectorias salieron, pero no sobre qué homografía ni qué zonas, que es
+    # lo que cualquier vista necesita para dibujar la malla o asociar al tiro.
+    entrada = {
+        "video": video.filename,
+        "h_matrix": h_matrix_parsed,
+        "origin_zone": origin_zone_parsed,
+        "expected_projection_zone": expected_zone_parsed,
+        "parametros": {"percentile": percentile, "sigma": sigma, "esp": esp},
+    }
     with Session(engine) as session:
-        new_job = Job(status="Iniciando...", progress=0)
+        new_job = Job(status="Iniciando...", progress=0, entrada=entrada)
         session.add(new_job)
         session.commit()
         session.refresh(new_job)

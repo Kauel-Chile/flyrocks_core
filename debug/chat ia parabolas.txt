@@ -1,0 +1,215 @@
+Listo: debug/ASOCIACION_PARA_EQUIPO.md. Es autocontenido — no necesita leer nada más ni
+  tener acceso a tu carpeta.
+
+  El resumen en tres frases, por si quieres mandarle esto primero:
+
+  1. La idea central. Prolongamos el trazo hacia atrás desde su tangente inicial, y los
+  pozos candidatos son los que caen dentro de una cuña (no un círculo) que se abre con la
+  distancia — σ = 4°, medido, no elegido. Cada pozo recibe un costo con tres términos:
+  causalidad (descartar lo que está adelante), alineamiento y lejanía. Salen los 5 mejores
+  con confianza por softmax.
+
+  2. El paso que no es obvio: el paralaje. El inicio visible del trazo no está sobre el pozo
+  — la roca ya subió unos metros cuando aparece, y una cámara cenital la proyecta más lejos
+  del nadir de lo que está. La corrección es O = nadir + (p0 − nadir)/(1+k) con k =
+  z/(h−z). Lo bueno es que la altura del dron y la de la roca colapsan en un solo escalar —
+  no hay que conocer ninguna de las dos. Lo malo es que es el parámetro más sensible de todo
+  el sistema: equivocarse un paso en k cuesta entre 8 y 40 puntos de acierto. Eso está en
+  una matriz medida en el doc. Si él monta su versión, eso es lo primero que tiene que
+  calibrar.
+
+  3. Por qué esto solo da candidatos, y por qué su parte temporal encaja perfecto. Los pozos
+  vecinos están a 5.45 m pero detonan separados por 216 ms (6.5 frames). Los que detonan
+  dentro de 1 frame están a 19.7 m. Geometría y tiempo son complementarios casi exactos —
+  cada uno cubre el punto ciego del otro. Nuestro modo de falla lo confirma: cuando erra, el
+  67% de las veces elige un pozo más externo sobre el mismo eje de vuelo. Esos son
+  justamente los que el tiempo separa sin esfuerzo.
+
+  Rendimiento actual: top-1 = 88%, top-3 = 99%, el pozo verdadero nunca salió del top-5.
+  Contra trayectorias sintéticas, eso sí — está dicho explícitamente en el doc.
+
+  ---
+  Tres cosas del documento que le van a servir directo a él:
+
+  - No es asignación 1-a-1. Un pozo lanza varias rocas → min-cost flow con capacidad, no
+  Hungarian. Es un error fácil de cometer al montar el servicio.
+  - El eslabón débil es cuándo "nace" una traza (el destello y el humo tapan el origen). Ese
+  retardo hay que medirlo, no asumirlo — y se mide con los trazos manuales cuyo pozo ya
+  validamos. O sea: nuestra fase geométrica produce el ground truth de su fase temporal, no
+  son caminos paralelos.
+  - La parábola no se ve parábola desde el dron. Si su tracker filtra por continuidad sin
+  reversas, las trayectorias largas se le van a partir en dos — la traza retrocede en la
+  imagen cuando h < 4·z_max (con el dron a 250 m, toda roca que suba de ~62 m). Le puede
+  ahorrar días de debuggear un tracker que no está fallando.
+
+  Al final del doc dejé un contrato JSON mínimo de entrada/salida para que los dos lados
+  sean comparables con la misma métrica. La señal a buscar: si ambos approaches fallan en
+  trazos distintos, la combinación supera a las dos por separado. Si fallan en los mismos,
+  el problema está aguas arriba (homografía o nacimiento de la traza).
+
+✻ Sautéed for 1m 57s
+
+※ recap: Escribí el documento que explica a tu colega el approach de asociación
+  trayectoria→pozo, en debug/ASOCIACION_PARA_EQUIPO.md, con el resumen corto en el chat.
+  Queda que se lo pases y decidas si seguimos con la fase temporal.
+
+❯ me preguntan como defines la curva hacia atras, en pixeles x,y a partir de los puntos de
+  bazier que dibuja el usuario.
+
+  la otra duda es si usas la altura para tener un punto de referencia para mirar para abajo
+  y proyectar la curva? estas asumiendo algun dato? para poder estimar esta "sombra" de la
+  que me hablabas?
+
+● Voy a mirar el código exacto para responderte sin aproximar.
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Buenas preguntas las dos. La segunda tiene una respuesta que probablemente no esperan.
+
+  ---
+  1. La curva hacia atrás: en realidad son dos cosas distintas, y solo una es curva
+
+  Esto confunde siempre, así que conviene separarlo de entrada:
+
+  ┌─────────────────────────────┬───────────────────┬───────────┐
+  │                             │      Qué es       │ Geometría │
+  ├─────────────────────────────┼───────────────────┼───────────┤
+  │ La que busca el pozo        │ un rayo recto     │ recta     │
+  ├─────────────────────────────┼───────────────────┼───────────┤
+  │ La que dibuja hacia el pozo │ Bézier cuadrática │ curva     │
+  └─────────────────────────────┴───────────────────┴───────────┘
+
+  La búsqueda no usa ninguna curva. La curva es puramente el empalme visual, después de que
+  ya se eligió el pozo.
+
+  1a. La búsqueda: solo la tangente inicial
+
+  De la Bézier del usuario B(p0, c1, p2), la tangente en el arranque es B'(0) = 2(c1 − p0).
+  La dirección hacia atrás es la opuesta, normalizada — y el factor 2 se cancela al
+  normalizar, así que c1 entra solo como dirección; su distancia a p0 no importa:
+
+  // trayectorias.html:590
+  let dx = T.p0.x - T.c1.x, dy = T.p0.y - T.c1.y;
+  const n = Math.hypot(dx, dy);
+  dx /= n; dy /= n;
+
+  Y el barrido es un producto punto / producto cruz contra ese eje, por cada pozo (asociar,
+  línea 604):
+
+  a    = vx*dx + vy*dy          // avance a lo largo del eje
+  perp = |vx*dy - vy*dx|        // desvío perpendicular
+
+  O sea: p2 (el impacto) no participa en absoluto de la asociación. Solo p0 y c1.
+
+  Por qué recta y no prolongar la parábola. Está medido: para retrocesos cortos (~20 m) la
+  curva balística real se desvía 0.8–2.3 m de la recta tangente — menos que la separación
+  entre pozos (5.45 m), o sea invisible para este problema. A 80 m se desvía 8–25 m y deja
+  de valer. Como la roca se hace visible cerca de donde salió, el régimen de uso es el
+  corto. Extrapolar la Bézier hacia atrás sería peor, además, porque su curvatura la fijó el
+  usuario mirando el tramo visible, no el oculto.
+
+  1b. El dibujo: Bézier cuadrática con tangente continua
+
+  Ya elegido el pozo Q, se arma B(Q, C, p0) con (línea 651):
+
+  t̂ = normalize(c1 − p0)              // tangente de entrada del trazo del usuario
+  L = |Q − p0|
+  C = p0 − t̂ · L/2                    // control a media distancia, hacia atrás
+
+  La razón del L/2 es que hace el empalme G¹ exacto. La tangente de salida del tramo nuevo
+  en su extremo final es B'(1) = 2(p0 − C) = 2·(t̂·L/2) = t̂·L — paralela a t̂, que es justo la
+  tangente con que arranca el trazo del usuario. No hay quiebre en p0, y las dos piezas se
+  leen como una sola trayectoria.
+
+  La curvatura del tramo sale sola: si Q cae exactamente sobre el rayo de búsqueda, C queda
+  colineal y el tramo degenera en una recta. Mientras más lateral esté Q, más se arquea. No
+  es una parábola balística modelada — es la curva mínima que conecta el pozo con el trazo
+  sin quiebre.
+
+  ---
+  2. La altura: no uso ninguna. Ni la del dron, ni la de la roca.
+
+  Esta es la parte que vale la pena que entiendan bien, porque es lo que hace el método
+  usable sin telemetría.
+
+  La derivación
+
+  Cámara cenital, proyección pinhole. Un punto a altura z y radio real R desde el eje óptico
+  se proyecta a r ∝ R/(h−z). Un punto en el suelo (z=0) a radio R se proyecta a r ∝ R/h.
+
+  La roca elevada se ve donde estaría un punto de suelo a radio R_ap:
+
+  R_ap / h = R_real / (h − z)   →   R_ap = R_real · h/(h−z)
+
+  Despejando y reagrupando:
+
+  R_real = R_ap · (h−z)/h = R_ap / (1 + z/(h−z)) = R_ap / (1 + k)
+
+  h y z no aparecen nunca por separado. Solo su razón. Esa es toda la gracia: no hay que
+  estimar la altura del dron ni la de la roca — hay una sola incógnita escalar adimensional,
+  y se busca directamente.
+
+  Por eso en el código no hay metros por ningún lado (línea 587), es una interpolación pura
+  en píxeles hacia el nadir:
+
+  const f = 1 + AS.k;
+  const O = { x: nx + (T.p0.x - nx) / f, y: ny + (T.p0.y - ny) / f };
+
+  Geométricamente: acercar el punto hacia el nadir por un factor 1/(1+k). Nada más. Con k =
+  0.08, el origen se corre un 7.4% de su distancia al nadir, hacia adentro.
+
+  Lo que sí asumo (la lista completa y honesta)
+
+  1. El nadir, o sea el píxel bajo la cámara. Es el único punto de referencia geométrico que
+  existe en todo el cálculo — eso es lo que responde tu "punto de referencia para mirar
+  para abajo". Arranca en el centro del cuadro y es arrastrable a mano; asume cámara
+  apuntando abajo.
+  2. Proyección pinhole cenital, sin corregir distorsión de lente. En el borde del cuadro
+  eso mete error.
+  3. Terreno plano en z = 0, que es lo que ya asume la homografía. En un rajo hay cotas
+  reales (el CSV trae Z por pozo, ~3175.8 m); hoy no se usan para variar k por pozo.
+  4. Un k global para todas las trayectorias — o sea, que todas las rocas se hacen visibles
+  a más o menos la misma altura. Es falso en general; es la aproximación de primer orden.
+  5. El desplazamiento es puramente radial desde el nadir. Esto no es un supuesto extra — es
+  consecuencia exacta de (2).
+
+  Advertencia importante sobre el estado actual
+
+  Hoy el default es k = 0, o sea la corrección está apagada y el sistema usa el punto
+  dibujado tal cual. Fue deliberado: mientras k no esté calibrado con datos reales, corregir
+  con un valor inventado mueve el origen sin fundamento, y al validar conviene tener una
+  variable menos.
+
+  Pero la matriz de sensibilidad dice que eso tiene un costo: si el k real es 0.08 y asumes
+  0, caes de 88% a 55% de acierto. Así que no es un default "seguro", es un default neutro.
+  Si van a montar el servicio, calibrar k es la tarea #1.
+
+  Cota física para acotar el slider: con el dron a ~250 m y la roca haciéndose visible entre
+  5 y 25 m de altura, k = z/(h−z) cae en 0.02–0.11. Ese es el rango útil.
+
+  Cómo se despeja k sin adivinar
+
+  Dos caminos, y el segundo es el bueno:
+
+  - Sin ground truth (probado, funciona a medias): comparar la distribución radial de los
+  pozos elegidos contra la de la malla. Con k sobreestimado el sesgo se vuelve negativo y se
+  detecta limpio; con k correcto o subestimado el sesgo se queda plano en ≈ +1.5 m y no
+  distingue entre ambos casos. Sirve como cota superior, no como calibrador.
+  - Con la fase temporal (el camino correcto): tiempo de vuelo → balística determinada → z
+  real de cada roca → k propio por trayectoria en vez de uno global → reasociar. Converge en
+  2–3 vueltas.
+
+  Que es exactamente el punto de unión con lo que tu colega está haciendo: su dimensión
+  temporal es lo que convierte el parámetro más frágil de mi lado en un valor derivado de
+  los datos.
+
+  Todo esto ya está en debug/ASOCIACION_PARA_EQUIPO.md §3.3 y §5.3 — puedo agregarle la
+  derivación del R_ap y el detalle del L/2 del empalme si quieres que el documento quede
+  cerrado sin necesidad de esta conversación.
+
+✻ Sautéed for 1m 32s
+
+※ recap: Estamos preparando material para que tu colega monte su propia versión de la
+  asociación trayectoria→pozo. Ya está el documento en debug/ASOCIACION_PARA_EQUIPO.md y
+  respondí sus dos dudas técnicas. Falta que me digas si le agrego esas dos derivaciones al
+  documento.
