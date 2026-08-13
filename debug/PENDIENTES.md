@@ -188,10 +188,38 @@ poder sumar campos sin migrar) y salen por `GET /api/results/{job_id}`.
 del caso local — escala 8.5495 px/m, diámetro equivalente 60.29 m, radio de
 evacuación deducido 101.1 m contra 100 reales, 726/726 con eje temporal.
 
-**Falta el CSV de secuencia (importante).** Hoy lo lee el navegador en el paso 3
-y nunca llega al backend, así que un job **no trae la malla de tiros** y sin
-malla no hay asociación. La vista avisa en vez de fallar. Al resolverlo: subirlo
-en el paso 3 y guardarlo en `Job.entrada`, o mandar los pozos ya proyectados.
+**El CSV de secuencia ya llega al core ✅ (2026-08-12).** Era el último eslabón:
+el navegador lo leía en el paso 3 y nunca salía de ahí, así que un job **no traía
+la malla** y sin malla no hay asociación.
+
+- `/api/analyze` acepta `detonation_sequence` (**opcional**: sin él el análisis
+  corre igual y un wizard viejo sigue funcionando sin cambios).
+- `utils/malla.py` (nuevo) parsea y proyecta con la `h_matrix` que ya viajaba en
+  la misma petición. **Verificado: 113 pozos, desvío máximo 0.0 px** contra la
+  calibración manual de `pre_tiros.py`.
+- En `entrada` van **las dos cosas**: `secuencia.csv` crudo (4 KB, fuente de
+  verdad — permite reproyectar si mañana cambia el método sin volver a pedirle
+  el archivo al usuario) y `malla.pozos` ya proyectado.
+- **Falla blando:** un CSV mal formado anota `entrada.malla_error` y el pipeline
+  sigue. Perder la asociación es malo; perder también las trayectorias por una
+  fila rara de Excel sería peor.
+- En el wizard fue **una línea** (`wizardDataContext.tsx`): el archivo ya estaba
+  en el estado y ya se mandaba a `/api/generate_report`; la línea estaba escrita
+  y comentada.
+
+**Bug encontrado de paso en la vista:** la homografía llega **aplanada**
+(`[[9 números]]`, porque el wizard la manda con un `toString()`) y `escalaDeH`
+la leía como 3×3 anidada → `NaN` en silencio → escala 1 px/m. Se normaliza con
+`aH3()`, igual que el `reshape(3,3)` que ya hacía el core.
+
+**Ancla temporal pendiente:** el CSV da tiempos *relativos* entre pozos, no el
+frame del video donde arranca la secuencia (`frame_inicio` queda en `null`). Hoy
+lo fija el usuario en la vista; el camino automático es [[P8]] (destello).
+
+**Observación sobre el front del colega:** `Step3.tsx:190-195` mapea solo
+`X, Y, Z, Label` — **descarta `DetonatingTime` al leer**. Por eso en su vista no
+se puede hacer calce temporal aunque se quisiera. Con este cambio el tiempo llega
+igual al backend por el archivo crudo, así que no es urgente.
 
 **Migración de esquema:** `SQLModel.metadata.create_all()` solo crea tablas que
 faltan, **no altera las existentes**. Al desplegar sobre una base ya creada el
