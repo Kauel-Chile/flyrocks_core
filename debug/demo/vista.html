@@ -90,6 +90,8 @@
   #cz{cursor:crosshair}
   body.paneando #cz{cursor:grabbing}
   body.dibujando #cz{cursor:cell}
+  body.lazando #cz{cursor:crosshair}
+  body.uniendo #cz{cursor:alias}
 
   aside{
     width:290px; flex:0 0 auto; background:var(--panel);
@@ -188,6 +190,8 @@
     <button id="btnZonas">Zonas</button>
     <button id="btnEscape" title="Isolíneas de escape relativo, en diámetros de voladura">Escape</button>
     <button id="btnDibujar">Dibujar trayectoria</button>
+    <button id="btnLazo" title="Rodea trayectorias para descartarlas en masa (L). Por defecto solo agarra las que quedan ENTERAS dentro; con Alt agarra las que apenas tocan. Con Shift restaura en vez de descartar.">Lazo</button>
+    <button id="btnUnir" title="Une dos trayectorias partidas por sus extremos (U). Selecciona una, activa Unir y haz clic en la otra.">Unir</button>
   </div>
 
   <div class="sep"></div>
@@ -381,8 +385,14 @@ const F = {
 const U = {
   fondo: "mascara", opFondo: 0.75,
   malla: false, zonas: false, escape: false,
-  sel: -1, dibujando: false,
+  sel: -1, dibujando: false, lazo: false, uniendo: false,
 };
+
+// Lazo de descarte en masa. `pts` va en coordenadas de IMAGEN, no de pantalla:
+// si el usuario hace zoom o desplaza a mitad del trazo, el lazo sigue rodeando
+// lo mismo. `n` es el conteo en vivo, para que se vea a cuántas va a agarrar
+// ANTES de soltar.
+const LAZO = { pts: [], n: 0, tocar: false, restaurar: false };
 
 // Trazo en construccion: p0 -> p2 -> se curva moviendo el control.
 let NUEVO = null;
@@ -1061,6 +1071,7 @@ function dibujarTrazos(){
   if (U.sel >= 0) resaltar(C.proyecciones[U.sel], ancho);
   if (NUEVO) dibujarNuevo();
   if (A.activo) dibujarNadir();
+  if (LAZO.pts.length) dibujarLazo();
 }
 
 // Cuña de retroceso: por donde pudo haber venido la roca. Se ABRE con la
@@ -1487,7 +1498,20 @@ function pie(){
   const m = C ? `${C.meta.nombre} · ${C.meta.ancho}×${C.meta.alto} · ${C.proyecciones.length} trayectorias` : "";
   const z = `zoom ${(V.z * 100).toFixed(0)}%`;
   const d = U.dibujando ? " · <b>dibujando</b>: clic inicio, clic impacto, mueve para curvar, clic para fijar" : "";
-  $("pie").innerHTML = `${m} · ${z}${d}`;
+
+  // El conteo del lazo va en vivo y en el color de la acción: un borrado en masa
+  // a ciegas es lo que hace perder la confianza en la herramienta.
+  let l = "";
+  if (arrastre && arrastre.lazo){
+    const col = LAZO.restaurar ? "#4da3ff" : "#ff4d4d";
+    const verbo = LAZO.restaurar ? "restaurar" : "descartar";
+    const modo = LAZO.tocar ? "que toquen" : "enteras dentro";
+    l = ` · <b style="color:${col}">${LAZO.n}</b> a ${verbo} <span style="opacity:.6">(${modo})</span>`;
+  } else if (U.lazo){
+    l = " · <b>lazo</b>: arrastra para rodear · Alt = las que tocan · Shift = restaurar";
+  }
+  const u = U.uniendo ? " · <b>unir</b>: haz clic en el otro tramo" : "";
+  $("pie").innerHTML = `${m} · ${z}${d}${l}${u}`;
 }
 
 // ===========================================================================
@@ -1523,6 +1547,41 @@ cz.addEventListener("mousedown", (e) => {
     dibujar();
     return;
   }
+
+  // El lazo se arrastra: abajo empieza, mueve dibuja, arriba aplica. Los
+  // modificadores se leen ACÁ y se congelan para todo el trazo — si se leyeran
+  // al soltar, levantar el Alt un instante antes cambiaría lo que agarra.
+  if (U.lazo && e.button === 0){
+    LAZO.pts = [p];
+    LAZO.tocar = e.altKey;
+    LAZO.restaurar = e.shiftKey;
+    LAZO.n = 0;
+    arrastre = { lazo: true };
+    return;
+  }
+
+  // Unir: el segundo clic elige el otro tramo.
+  if (U.uniendo && e.button === 0){
+    const j = buscar(p);
+    if (j < 0) return;
+    if (j === U.sel){ alert("Esa es la misma trayectoria. Haz clic en la otra."); return; }
+    // Unir sirve para tramos CONSECUTIVOS de un mismo vuelo. Si los dos viven al
+    // mismo tiempo no son un vuelo partido: son dos detecciones de la misma roca
+    // (o de dos rocas distintas), y eso es otro problema. Se avisa en vez de
+    // impedirlo, porque a veces unirlos igual es lo que uno quiere.
+    const s = solapeTemporal(C.proyecciones[U.sel], C.proyecciones[j]);
+    if (s > 0 && !confirm(
+        `Estos dos tramos coexisten durante ${s} frames, así que no parecen las `
+      + `dos mitades de un mismo vuelo sino dos detecciones simultáneas.\n\n`
+      + `Los puntos se van a intercalar por tiempo.\n\n¿Unir igual?`)) return;
+    const nuevo = unirTrayectorias(U.sel, j);
+    if (nuevo != null){
+      U.sel = nuevo;
+      alternarUnir();          // una activación, una unión
+      recalcular(); verDetalle(); dibujar();
+    }
+    return;
+  }
   if (e.button === 0 && !e.shiftKey){
     // El nadir manda: es un blanco chico y se ajusta mucho al calibrar.
     if (A.activo && Math.hypot(A.nadir.x - p.x, A.nadir.y - p.y) <= 14 / V.z){
@@ -1556,6 +1615,18 @@ function posLienzo(e){
 }
 
 window.addEventListener("mousemove", (e) => {
+  if (arrastre && arrastre.lazo){
+    const d = posLienzo(e);
+    const u = LAZO.pts[LAZO.pts.length - 1];
+    // Un punto cada ~4 px de PANTALLA: sin esto el polígono junta miles de
+    // vértices y el conteo en vivo se arrastra.
+    if (Math.hypot(d.x - u.x, d.y - u.y) * V.z >= 4){
+      LAZO.pts.push(d);
+      LAZO.n = atrapadas(LAZO.pts, LAZO.tocar, LAZO.restaurar).length;
+    }
+    dibujar();
+    return;
+  }
   if (arrastre && arrastre.nadir){
     A.nadir = posLienzo(e);
     refrescarAsoc(); dibujar();
@@ -1584,6 +1655,14 @@ window.addEventListener("mousemove", (e) => {
 });
 
 window.addEventListener("mouseup", () => {
+  if (arrastre && arrastre.lazo){
+    arrastre = null;
+    // Menos de 3 vértices es un clic suelto, no un lazo: se ignora en vez de
+    // descartar algo por accidente.
+    if (LAZO.pts.length < 3){ LAZO.pts = []; LAZO.n = 0; dibujar(); return; }
+    aplicarLazo();
+    return;
+  }
   const eraNadir = arrastre && arrastre.nadir;
   arrastre = null;
   document.body.classList.remove("paneando");
@@ -1645,9 +1724,10 @@ function verDetalle(){
   const est = T.estado === "descartada" ? "descartada"
             : T.estado === "oculta" ? `oculta (${T.razon})` : "visible";
   const manual = T.fuente === "manual";
+  const unida = T.fuente === "unida";
   $("detalle").innerHTML =
     par("id", T.id) +
-    par("origen", manual ? "dibujada" : "pipeline") +
+    par("origen", manual ? "dibujada" : unida ? "unión de 2 tramos" : "pipeline") +
     par("clase", T.clasificacion || "—") +
     par("largo del trazo", (T.distancia_m ?? 0).toFixed(1) + " m") +
     distanciaDesdePozo(T) +
@@ -1662,6 +1742,11 @@ function verDetalle(){
         Arrastra los nodos para ajustarla.<br>
         <kbd>C</kbd> alterna el segundo manejador (curva asimétrica).<br>
         No la afectan los filtros de calidad.</div>` : "") +
+    (unida ? `<div style="color:var(--dim);font-size:11px;margin-top:8px;line-height:1.5">
+        Unida de <b>${(T.unida_de || []).join("</b> y <b>")}</b>, que quedaron
+        descartados.<br>
+        La tortuosidad se recalculó sobre el trazo completo; el escape relativo
+        y el R² se heredaron del valor más conservador de los dos.</div>` : "") +
     panelCandidatos(T) +
     `<div class="fila" style="margin-top:10px">
        <button class="mini ${T.estado === "descartada" ? "" : "peligro"}" id="btnDesc">
@@ -1719,12 +1804,266 @@ function panelCandidatos(T){
   return html + "</div>";
 }
 
+// ===========================================================================
+//  Lazo: descarte en masa
+// ===========================================================================
+//
+// El dolor que ataca: hay cientos de trazas de humo que hay que sacar a mano, y
+// con los duplicados casi superpuestos borras una y aparecen tres detrás. Uno
+// por uno es inviable.
+//
+// La decisión de diseño que importa es QUÉ agarra el lazo. Por defecto solo las
+// que quedan ENTERAS dentro: así una trayectoria larga y buena que simplemente
+// cruza la zona rodeada no se pierde, que es el error caro (borrar señal es
+// irreversible de hecho, aunque el estado se guarde). Con Alt agarra también las
+// que apenas tocan, para limpiar rápido una esquina donde no hay nada bueno.
+//
+// Y el conteo va EN VIVO mientras arrastras, porque un borrado en masa a ciegas
+// es exactamente lo que dejó al usuario sin confianza en la herramienta.
+
+// Punto en polígono por lanzamiento de rayo. El polígono llega como lista de
+// {x,y} y se recorre por pares consecutivos cerrando el último con el primero.
+function dentroPoly(x, y, poly){
+  let dentro = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++){
+    const xi = poly[i].x, yi = poly[i].y, xj = poly[j].x, yj = poly[j].y;
+    if (((yi > y) !== (yj > y)) &&
+        (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) dentro = !dentro;
+  }
+  return dentro;
+}
+
+function cajaDe(poly){
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const p of poly){
+    if (p.x < x0) x0 = p.x;
+    if (p.x > x1) x1 = p.x;
+    if (p.y < y0) y0 = p.y;
+    if (p.y > y1) y1 = p.y;
+  }
+  return { x0, y0, x1, y1 };
+}
+
+// Índices de las trayectorias que el lazo agarra. El descarte de la caja
+// envolvente es lo que hace esto viable en vivo: con 763 trayectorias de ~100
+// puntos, probar todo contra un polígono de 100 vértices en cada mousemove daría
+// tirones. La caja rechaza casi todas con cuatro comparaciones.
+function atrapadas(poly, tocar, restaurar){
+  if (poly.length < 3) return [];
+  const caja = cajaDe(poly);
+  const res = [];
+  for (let i = 0; i < C.proyecciones.length; i++){
+    const T = C.proyecciones[i];
+    // Restaurando se busca lo descartado; descartando, lo que se ve.
+    if (restaurar){
+      if (T.estado !== "descartada") continue;
+    } else {
+      if (T.estado === "descartada") continue;
+    }
+    const b = T.bb;
+    if (b.x1 < caja.x0 || b.x0 > caja.x1 || b.y1 < caja.y0 || b.y0 > caja.y1) continue;
+    // Para exigir la trayectoria entera, que su caja no quepa en la del lazo ya
+    // la descarta sin mirar un solo punto.
+    if (!tocar && (b.x0 < caja.x0 || b.x1 > caja.x1 || b.y0 < caja.y0 || b.y1 > caja.y1))
+      continue;
+
+    const p = T.puntos;
+    let alguno = false, todos = true;
+    for (let k = 0; k < p.length; k += 2){
+      if (dentroPoly(p[k], p[k+1], poly)){
+        alguno = true;
+        if (tocar) break;
+      } else {
+        todos = false;
+        if (!tocar) break;
+      }
+    }
+    if (tocar ? alguno : todos) res.push(i);
+  }
+  return res;
+}
+
+function aplicarLazo(){
+  const idx = atrapadas(LAZO.pts, LAZO.tocar, LAZO.restaurar);
+  for (const i of idx){
+    const T = C.proyecciones[i];
+    if (LAZO.restaurar){ T.estado = "activa"; T.razon = null; }
+    else { T.estado = "descartada"; T.razon = "lazo"; }
+  }
+  // Si la seleccionada se fue en la redada, deja de tener sentido el panel.
+  if (U.sel >= 0 && idx.includes(U.sel) && !LAZO.restaurar) U.sel = -1;
+  LAZO.pts = []; LAZO.n = 0;
+  recalcular(); verDetalle(); dibujar();
+  return idx.length;
+}
+
+function dibujarLazo(){
+  if (LAZO.pts.length < 2) return;
+  gz.save();
+  gz.beginPath();
+  const q0 = aPan(LAZO.pts[0]);
+  gz.moveTo(q0.x, q0.y);
+  for (let i = 1; i < LAZO.pts.length; i++){
+    const q = aPan(LAZO.pts[i]);
+    gz.lineTo(q.x, q.y);
+  }
+  gz.closePath();
+  gz.fillStyle = LAZO.restaurar ? "rgba(77,163,255,0.12)" : "rgba(255,77,77,0.12)";
+  gz.fill();
+  gz.strokeStyle = LAZO.restaurar ? "#4da3ff" : "#ff4d4d";
+  gz.lineWidth = 1.5;
+  gz.setLineDash([6, 4]);
+  gz.stroke();
+  gz.setLineDash([]);
+  gz.restore();
+}
+
+function alternarLazo(){
+  U.lazo = !U.lazo;
+  LAZO.pts = []; LAZO.n = 0;
+  if (U.lazo && U.dibujando) alternarDibujo();
+  if (U.lazo && U.uniendo) alternarUnir();
+  $("btnLazo").classList.toggle("on", U.lazo);
+  document.body.classList.toggle("lazando", U.lazo);
+  dibujar();
+}
+
 function alternarDescarte(){
   if (U.sel < 0) return;
   const T = C.proyecciones[U.sel];
   if (T.estado === "descartada"){ T.estado = "activa"; T.razon = null; }
   else { T.estado = "descartada"; T.razon = "usuario"; }
   recalcular(); verDetalle();
+}
+
+// ===========================================================================
+//  Unir dos trayectorias partidas
+// ===========================================================================
+//
+// Es el parche manual a la fragmentación: el tracker corta un vuelo largo en
+// dos justo donde la traza se devuelve en la imagen (el retroceso por paralaje),
+// y quedan dos mitades que son una sola roca.
+//
+// El orden lo decide el TIEMPO, no la geometría, cuando ambas lo traen: la que
+// nace antes va primero y ninguna se invierte. Ordenar por cercanía de extremos
+// obligaría a veces a dar vuelta una, y ahí `frames` dejaría de ir ascendente —
+// que es de donde salen `t_ini` y todo el calce temporal. Solo se cae a la
+// geometría con trazos manuales, que no tienen eje temporal.
+function unirTrayectorias(iA, iB){
+  const A1 = C.proyecciones[iA], B1 = C.proyecciones[iB];
+  if (!A1 || !B1 || iA === iB) return null;
+
+  let pri = A1, seg = B1;
+  const conTiempo = A1.t_ini != null && B1.t_ini != null;
+  if (conTiempo){
+    if (B1.t_ini < A1.t_ini){ pri = B1; seg = A1; }
+  } else {
+    // Sin tiempo: se elige el emparejamiento de extremos más corto y se invierte
+    // lo que haga falta para que la unión sea continua.
+    const d = (u, v) => Math.hypot(u.x - v.x, u.y - v.y);
+    const casos = [
+      { d: d(A1.pf, B1.p0), a: false, b: false },
+      { d: d(A1.pf, B1.pf), a: false, b: true  },
+      { d: d(A1.p0, B1.p0), a: true,  b: false },
+      { d: d(A1.p0, B1.pf), a: true,  b: true  },
+    ].sort((x, y) => x.d - y.d)[0];
+    if (casos.a) invertir(A1);
+    if (casos.b) invertir(B1);
+  }
+
+  // Con eje temporal los puntos se INTERCALAN por frame, no se concatenan.
+  //
+  // Concatenar solo funciona si un tramo termina antes de que el otro empiece.
+  // Si se solapan en el tiempo —y se solapan justo en el caso que más tienta a
+  // unir, dos detecciones casi superpuestas de la misma roca— la lista de frames
+  // deja de ir ascendente, y de ahí salen `t_ini` y todo el calce temporal.
+  // Ordenar por frame lo garantiza por construcción, y para dos tramos
+  // realmente consecutivos da exactamente el mismo resultado que concatenar.
+  let puntos, frames = null;
+  if (pri.frames && seg.frames){
+    const trios = [];
+    const cargar = (T) => {
+      for (let k = 0; k < T.frames.length; k++)
+        trios.push([T.frames[k], T.puntos[2*k], T.puntos[2*k+1]]);
+    };
+    cargar(pri); cargar(seg);
+    trios.sort((a, b) => a[0] - b[0]);
+    puntos = []; frames = [];
+    for (const [f, x, y] of trios){ frames.push(f); puntos.push(x, y); }
+  } else {
+    puntos = pri.puntos.concat(seg.puntos);
+  }
+
+  const esc = C.calibra.escala_px_por_m || 1;
+  const p0 = { x: puntos[0], y: puntos[1] };
+  const pf = { x: puntos[puntos.length - 2], y: puntos[puntos.length - 1] };
+
+  // Recorrido real sobre la polilínea, para la tortuosidad.
+  let largo = 0;
+  for (let k = 2; k < puntos.length; k += 2)
+    largo += Math.hypot(puntos[k] - puntos[k-2], puntos[k+1] - puntos[k-1]);
+  const cuerda = Math.hypot(pf.x - p0.x, pf.y - p0.y);
+
+  const T = {
+    id: `${pri.id}+${seg.id}`,
+    fuente: "unida",
+    unida_de: [pri.id, seg.id],
+    puntos, frames,
+    t_ini: frames ? frames[0] : null,
+    t_fin: frames ? frames[frames.length - 1] : null,
+    // La clasificación depende de DÓNDE TERMINA la roca (dentro del área, fuera,
+    // o saliéndose del cuadro), así que manda la del tramo que termina último.
+    // No es siempre el que empieza último: con tramos solapados, el que nace
+    // después puede apagarse antes.
+    clasificacion: (pri.t_fin != null && seg.t_fin != null && pri.t_fin > seg.t_fin)
+      ? pri.clasificacion : seg.clasificacion,
+    distancia_m: +(cuerda / esc).toFixed(2),
+    // Tortuosidad se recalcula exacta sobre la polilínea unida. Las otras dos no
+    // se pueden recalcular acá sin rehacer el ajuste del pipeline, así que se
+    // toma el valor conservador de cada una: la unión llega al menos tan lejos
+    // como el tramo que más se aleja, y no ajusta mejor que el peor de los dos.
+    tortuosidad: cuerda > 1e-6 ? +(largo / cuerda).toFixed(3) : 1,
+    escape_relativo: Math.max(pri.escape_relativo || 0, seg.escape_relativo || 0),
+    r2_score: Math.min(pri.r2_score ?? 1, seg.r2_score ?? 1),
+    estado: "activa", razon: null, asociacion: null,
+  };
+  preparar(T);
+
+  // Los dos tramos NO se borran: quedan descartados con su razón. Así el JSON
+  // sigue contando la historia completa y la unión se puede deshacer a mano.
+  pri.estado = "descartada"; pri.razon = "unida";
+  seg.estado = "descartada"; seg.razon = "unida";
+
+  C.proyecciones.push(T);
+  return C.proyecciones.length - 1;
+}
+
+// Frames en que los dos tramos coexisten. 0 o menos = son consecutivos.
+function solapeTemporal(A1, B1){
+  if (A1.t_ini == null || B1.t_ini == null) return 0;
+  return Math.max(0, Math.min(A1.t_fin, B1.t_fin) - Math.max(A1.t_ini, B1.t_ini));
+}
+
+function invertir(T){
+  const p = T.puntos, r = [];
+  for (let k = p.length - 2; k >= 0; k -= 2) r.push(p[k], p[k+1]);
+  T.puntos = r;
+  if (T.frames) T.frames = T.frames.slice().reverse();
+  preparar(T);
+}
+
+function alternarUnir(){
+  // Unir necesita una trayectoria ya elegida: es el primer tramo.
+  if (!U.uniendo && U.sel < 0){
+    alert("Primero selecciona una de las dos trayectorias y después activa Unir.");
+    return;
+  }
+  U.uniendo = !U.uniendo;
+  if (U.uniendo && U.dibujando) alternarDibujo();
+  if (U.uniendo && U.lazo) alternarLazo();
+  $("btnUnir").classList.toggle("on", U.uniendo);
+  document.body.classList.toggle("uniendo", U.uniendo);
+  dibujar();
 }
 
 function fijarNuevo(){
@@ -1836,6 +2175,8 @@ $("btnEscape").addEventListener("click", e => {
   U.escape = !U.escape; e.target.classList.toggle("on", U.escape); dibujar();
 });
 $("btnDibujar").addEventListener("click", alternarDibujo);
+$("btnLazo").addEventListener("click", alternarLazo);
+$("btnUnir").addEventListener("click", alternarUnir);
 $("btnAsociar").addEventListener("click", alternarAsoc);
 
 // k es el parametro mas sensible del sistema: equivocarse un paso cuesta entre
@@ -1880,15 +2221,20 @@ $("btnNadirCentro").addEventListener("click", () => {
 $("btnAjustar").addEventListener("click", ajustarVista);
 $("btnReset").addEventListener("click", () => { derivarRangos(); recalcular(); });
 $("btnRestaurar").addEventListener("click", () => {
-  for (const T of C.proyecciones)
-    if (T.estado === "descartada"){ T.estado = "activa"; T.razon = null; }
+  for (const T of C.proyecciones){
+    // Los tramos consumidos por una unión NO se resucitan: volverían a la vista
+    // duplicando la trayectoria unida, que sigue ahí. Para deshacer una unión se
+    // descarta la unida y se restauran sus tramos desde el panel.
+    if (T.estado === "descartada" && T.razon !== "unida"){ T.estado = "activa"; T.razon = null; }
+  }
   recalcular(); verDetalle();
 });
 
 function alternarAsoc(){
-  // Sin malla de tiros no hay a qué asociar. Pasa cuando el caso viene del
-  // core: el CSV de secuencia lo lee hoy el navegador en el paso 3 y nunca
-  // llega al backend, así que el job no tiene los pozos.
+  // Sin malla de tiros no hay a qué asociar. Hoy pasa solo si el usuario no
+  // cargó el CSV de secuencia en el paso 3: es opcional, y el análisis corre
+  // igual sin él. (Antes pasaba SIEMPRE, porque el CSV se quedaba en el
+  // navegador y nunca llegaba al backend.)
   if (!A.activo && (!C.malla || !C.malla.pozos.length)){
     alert("Este análisis no trae la malla de tiros, así que no hay a qué "
         + "asociar.\n\nEl CSV de secuencia se carga hoy en el navegador y no "
@@ -1967,6 +2313,10 @@ function resumenAsoc(){
 function alternarDibujo(){
   U.dibujando = !U.dibujando;
   NUEVO = null;
+  // Los tres modos se excluyen: cada uno se apropia del clic izquierdo, y tener
+  // dos activos deja al usuario sin saber qué va a pasar al hacer clic.
+  if (U.dibujando && U.lazo) alternarLazo();
+  if (U.dibujando && U.uniendo) alternarUnir();
   $("btnDibujar").classList.toggle("on", U.dibujando);
   document.body.classList.toggle("dibujando", U.dibujando);
   dibujar();
@@ -1978,7 +2328,18 @@ window.addEventListener("keydown", (e) => {
   else if (e.key === "c" || e.key === "C") alternarGrado();
   else if (e.key === "d" || e.key === "D") alternarDibujo();
   else if (e.key === "a" || e.key === "A") alternarAsoc();
-  else if (e.key === "Escape"){ NUEVO = null; U.sel = -1; verDetalle(); dibujar(); }
+  else if (e.key === "l" || e.key === "L") alternarLazo();
+  else if (e.key === "u" || e.key === "U") alternarUnir();
+  else if (e.key === "Escape"){
+    NUEVO = null; U.sel = -1;
+    // Escape también aborta un lazo a medias y sale de los modos, que es lo que
+    // uno intenta cuando se dio cuenta de que iba a agarrar lo que no era.
+    LAZO.pts = []; LAZO.n = 0; arrastre = null;
+    if (U.lazo) alternarLazo();
+    if (U.uniendo){ U.uniendo = false; $("btnUnir").classList.remove("on");
+                    document.body.classList.remove("uniendo"); }
+    verDetalle(); dibujar();
+  }
   else if (e.key === "f" || e.key === "F") ajustarVista();
 });
 
@@ -2054,6 +2415,12 @@ function construirEntregable(){
       // Quien consuma el archivo filtra por estado; el resumen ya viene contado.
       estado: T.estado,
       oculta_por: T.razon,
+      // De dónde salió esta trayectoria: del detector, dibujada a mano, o unida
+      // de dos tramos. `unida_de` deja auditable qué se juntó y permite deshacer
+      // la unión leyendo el archivo, sin tener que confiar en la memoria de
+      // quien la hizo.
+      fuente: T.fuente || "pipeline",
+      unida_de: T.unida_de || null,
       origen: pozo ? {
         pozo: pozo.id,
         confianza: r3(cand[0].conf),
