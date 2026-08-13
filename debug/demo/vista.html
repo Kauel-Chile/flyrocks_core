@@ -230,6 +230,9 @@
     <label>causalidad ±</label>
     <input type="range" id="fTol" min="0" max="20" step="1" value="3">
     <span class="val" id="vTol">3f</span>
+    <label title="Frame del clip en que revienta el PRIMER tiro. El CSV da tiempos relativos entre pozos, no dónde arranca la secuencia dentro del video: este es el ancla que las une. Un caso congelado ya lo trae medido; un análisis del core empieza en 0 y hay que ajustarlo mirando el destello.">1ª detonación</label>
+    <input type="range" id="fAncla" min="0" max="300" step="1" value="0">
+    <span class="val" id="vAncla">0f</span>
   </div>
 </div>
 
@@ -426,6 +429,13 @@ async function cargar(){
   A.sigma = C.calibra.sigma_grados ?? 4;
   $("fK").value = A.k;      $("vK").textContent = A.k.toFixed(2);
   $("fSig").value = A.sigma; $("vSig").textContent = A.sigma + "°";
+
+  // El ancla temporal viene medida en un caso congelado y en 0 en un análisis
+  // del core, que no tiene cómo saberla: el CSV da tiempos relativos entre
+  // pozos, no dónde arranca la secuencia dentro del video.
+  const ancla = C.meta.frame_detonacion ?? C.malla.meta.frame_inicio ?? 0;
+  C.meta.frame_detonacion = ancla;
+  $("fAncla").value = ancla; $("vAncla").textContent = ancla + "f";
 
   // Un caso viejo (exportado antes de rescatar el eje temporal del pipeline)
   // no trae `frames`. La capa temporal se ofrece solo si hay con qué.
@@ -1839,6 +1849,13 @@ $("fRet").addEventListener("input", e => {
 $("fTol").addEventListener("input", e => {
   A.tolCausal = parseFloat(e.target.value);
   $("vTol").textContent = A.tolCausal + "f";
+  relanzar();
+});
+// El ancla temporal. `frameDePozo` la lee de C.meta.frame_detonacion, así que el
+// control escribe ahí directamente en vez de duplicar el estado.
+$("fAncla").addEventListener("input", e => {
+  C.meta.frame_detonacion = parseFloat(e.target.value);
+  $("vAncla").textContent = C.meta.frame_detonacion + "f";
   relanzar();
 });
 $("btnNadirCentro").addEventListener("click", () => {

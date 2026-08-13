@@ -56,6 +56,38 @@ def main():
     print(f"publicada: {DESTINO}")
     print(f"  {len(fuente)/1024:.0f} KB  sha256:{h}")
     print("  queda servida por nginx en /vista.html")
+    empujar_al_contenedor()
+
+
+def empujar_al_contenedor():
+    """Copia la vista al nginx que ya esta corriendo, sin reconstruir la imagen.
+
+    Iterar la vista no deberia costar un `npm run build` de un minuto por cada
+    ajuste. Como es un estatico, basta dejarlo dentro del contenedor vivo: al
+    recargar la pagina ya esta el cambio. La imagen queda desactualizada hasta el
+    siguiente build, y eso esta bien: la imagen es la entrega, esto es el taller.
+    """
+    import subprocess
+
+    try:
+        r = subprocess.run(
+            ["docker", "ps", "--filter", "name=konva-app", "--format", "{{.Names}}"],
+            capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return
+    nombres = [n for n in r.stdout.split() if n]
+    if not nombres:
+        print("  (no hay contenedor konva-app corriendo: se aplica al reconstruir)")
+        return
+
+    for nombre in nombres:
+        c = subprocess.run(
+            ["docker", "cp", str(DESTINO), f"{nombre}:/usr/share/nginx/html/vista.html"],
+            capture_output=True, text=True, timeout=60)
+        if c.returncode == 0:
+            print(f"  copiada en caliente a {nombre} - recarga la pagina y listo")
+        else:
+            print(f"  no se pudo copiar a {nombre}: {c.stderr.strip()}")
 
 
 if __name__ == "__main__":
