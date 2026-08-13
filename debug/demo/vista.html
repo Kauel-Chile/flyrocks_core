@@ -532,6 +532,21 @@ async function cargarDesdeCore(api, job){
   };
 }
 
+// Área de un polígono por la fórmula del cordón (shoelace), en las unidades del
+// polígono al cuadrado. Se toma el valor absoluto porque el signo solo dice si
+// los vértices vienen en sentido horario o antihorario, y acá llegan de las dos
+// formas: la zona de origen la dibuja el usuario y la de seguridad sale de un
+// offset sobre el hull.
+function areaPoly(pts){
+  if (!pts || pts.length < 3) return 0;
+  let s = 0;
+  for (let i = 0, n = pts.length; i < n; i++){
+    const a = pts[i], b = pts[(i + 1) % n];
+    s += a[0] * b[1] - b[0] * a[1];
+  }
+  return Math.abs(s) / 2;
+}
+
 // La homografía llega en dos formas según quién armó el job: anidada 3x3, o
 // aplanada dentro de una lista ([[9 números]]) porque el wizard la manda con un
 // `toString()`. El core la reordena con un reshape(3,3); acá se hace lo mismo,
