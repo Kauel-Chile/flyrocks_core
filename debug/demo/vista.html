@@ -572,11 +572,29 @@ function normalizarDelCore(crudo){
 }
 
 function cargarImg(url){
+  // Cuando la vista y el core están en puertos distintos —que es el caso normal
+  // en el standalone: nginx sirve esto en :3000 y la máscara viene del core en
+  // :8009— dibujar la imagen CONTAMINA el canvas, y `toBlob()` pasa a lanzar
+  // SecurityError. O sea: se ve todo bien en pantalla y los botones de
+  // entregables dejan de funcionar sin decir por qué.
+  //
+  // Pedirla con crossOrigin lo evita, siempre que el servidor mande
+  // Access-Control-Allow-Origin (el core lo hace: CORSMiddleware con "*").
+  // Si no las manda, pedirla así falla del todo, y ahí preferimos verla y
+  // perder la exportación antes que quedarnos sin fondo.
+  let otroOrigen = false;
+  try { otroOrigen = new URL(url, location.href).origin !== location.origin; }
+  catch (_) { otroOrigen = false; }
+
   return new Promise((res) => {
-    const im = new Image();
-    im.onload = () => res(im);
-    im.onerror = () => res(null);
-    im.src = url;
+    const intentar = (conCors) => {
+      const im = new Image();
+      if (conCors) im.crossOrigin = "anonymous";
+      im.onload = () => res(im);
+      im.onerror = () => conCors ? intentar(false) : res(null);
+      im.src = url;
+    };
+    intentar(otroOrigen);
   });
 }
 
@@ -2185,13 +2203,31 @@ function exportarImagen(capas, sufijo){
     Object.assign(A, guardaA);
   }
 
-  off.toBlob((b) => {
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(b);
-    a.download = `flyrocks_${C.meta.nombre}_${sufijo}.png`;
-    a.click();
-  }, "image/png");
+  descargarCanvas(off, sufijo);
   dibujar();
+}
+
+// Descarga un canvas como PNG. El try/catch no es decorativo: si el fondo se
+// cargó desde otro origen SIN cabeceras CORS, el canvas queda contaminado y
+// `toBlob` lanza SecurityError. Sin esto el botón no hace absolutamente nada y
+// el error solo aparece en la consola, que nadie mira.
+function descargarCanvas(canvas, sufijo){
+  try {
+    canvas.toBlob((b) => {
+      if (!b) return;
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(b);
+      a.download = `flyrocks_${C.meta.nombre}_${sufijo}.png`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    }, "image/png");
+  } catch (e) {
+    console.error(e);
+    alert("No se pudo exportar la imagen: el navegador bloqueó el canvas "
+        + "porque la imagen de fondo viene de otro servidor que no autoriza "
+        + "su lectura.\n\nEl resto de la vista funciona; para exportar hace "
+        + "falta que el core mande las cabeceras CORS de /temp_videos.");
+  }
 }
 
 $("btnImgFondo").addEventListener("click", () =>
@@ -2212,12 +2248,7 @@ $("btnImgOrigen").addEventListener("click", () => {
 // Estaban solo en salidas.py, lo que obligaba a saltar de herramienta a mitad
 // del trabajo. Son los mismos criterios que usa ese script.
 
-const bajar = (canvas, sufijo) => canvas.toBlob((b) => {
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(b);
-  a.download = `flyrocks_${C.meta.nombre}_${sufijo}.png`;
-  a.click();
-}, "image/png");
+const bajar = (canvas, sufijo) => descargarCanvas(canvas, sufijo);
 
 // Material por tiro, como MOSAICO: cada tiro pinta su zona de influencia (los
 // puntos que le quedan más cerca que a cualquier otro), sobre una retícula
