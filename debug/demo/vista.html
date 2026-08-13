@@ -484,28 +484,53 @@ async function cargarDesdeCore(api, job){
   const origen = aPares(E.origin_zone);
   const seguridad = aPares(E.expected_projection_zone);
 
-  const escala = escalaDeH(E.h_matrix);
+  const h3 = aH3(E.h_matrix);
+  if (!h3) throw new Error("la homografía del job no tiene 9 números válidos");
+  const escala = escalaDeH(h3);
   const areaM2 = areaPoly(origen) / (escala * escala);
   const diam = 2 * Math.sqrt(Math.max(areaM2, 1) / Math.PI);
 
+  // La malla la proyecta el core a partir del CSV de secuencia que sube el
+  // wizard. Si el usuario no lo cargó (es opcional), el job llega sin malla: la
+  // vista sirve igual para filtrar, descartar y dibujar, y la asociación se
+  // avisa como no disponible en vez de fallar.
+  const fps = (E.malla && E.malla.meta.fps) || 29.97;
+  const malla = (E.malla && E.malla.pozos && E.malla.pozos.length)
+    ? { meta: { ...E.malla.meta,
+                // El CSV da tiempos RELATIVOS entre pozos, no el instante del
+                // video en que arranca la secuencia. El core lo deja en null y
+                // el ancla la pone el usuario con el control de la vista.
+                frame_inicio: E.malla.meta.frame_inicio ?? 0, fps },
+        pozos: E.malla.pozos }
+    : { meta: { t_min: 0, t_max: 1, frame_inicio: 0, fps,
+                A: [[1, 0], [0, 1]], t: [0, 0] }, pozos: [] };
+  if (E.malla_error) console.warn("[malla] el core no pudo leer el CSV:", E.malla_error);
+
   C = {
     meta: { nombre: `job ${job.slice(0, 8)}`, video: E.video || "—",
-            ancho: W, alto: H, fps: 29.97, frame_detonacion: 0,
+            ancho: W, alto: H, fps, frame_detonacion: 0,
             generado: new Date().toISOString().slice(0, 16).replace("T", " ") },
-    calibra: { h_matrix: E.h_matrix, rms_px: null,
+    calibra: { h_matrix: h3, rms_px: null,
                escala_px_por_m: +escala.toFixed(4),
                nadir: [W / 2, H / 2], k: 0, sigma_grados: 4 },
     zonas: { origen, seguridad, origen_mundo: null,
              diametro_equiv_m: +diam.toFixed(2),
              seguridad_m: separacionMedia(origen, seguridad) / escala },
-    // Sin CSV de secuencia no hay malla de tiros, y sin malla no hay a qué
-    // asociar. La vista funciona igual para filtrar, descartar y dibujar; la
-    // capa de asociación se avisa como no disponible.
-    malla: { meta: { t_min: 0, t_max: 1, frame_inicio: 0, fps: 29.97,
-                     A: [[1, 0], [0, 1]], t: [0, 0] }, pozos: [] },
+    malla,
     proyecciones: normalizarDelCore(J.json_data || {}),
     vista: {},
   };
+}
+
+// La homografía llega en dos formas según quién armó el job: anidada 3x3, o
+// aplanada dentro de una lista ([[9 números]]) porque el wizard la manda con un
+// `toString()`. El core la reordena con un reshape(3,3); acá se hace lo mismo,
+// o `escalaDeH` devuelve NaN en silencio y la escala termina valiendo 1 px/m.
+function aH3(h){
+  if (!h) return null;
+  const v = h.flat(Infinity).map(Number);
+  if (v.length !== 9 || v.some(x => !isFinite(x))) return null;
+  return [v.slice(0, 3), v.slice(3, 6), v.slice(6, 9)];
 }
 
 // px/m de la homografía metros->píxeles: raíz del |det| del bloque lineal.

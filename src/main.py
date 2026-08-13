@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 
 from utils.database import engine, Job, migrar
 from utils.services import run_pipeline_task, TEMP_VIDEOS
+from utils import malla as malla_utils
 
 # Los videos y los JSON de resultado van bajo DATA_DIR, que es el directorio
 # montado como volumen. La URL publica sigue siendo /temp_videos para no
@@ -37,6 +38,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+def _fps_de(video_path: str):
+    """FPS del video, o None si no se puede leer.
+
+    Hace falta para convertir el tiempo de detonación (ms en el CSV) a frame del
+    video, que es la unidad en la que vienen las trayectorias. Se lee acá y no
+    en el pipeline porque acá el archivo ya está en disco y cuesta milisegundos.
+    """
+    try:
+        import cv2
+        cap = cv2.VideoCapture(video_path)
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        cap.release()
+        return round(float(fps), 3) if fps and fps > 0 else None
+    except Exception:
+        return None
+
+
 # --- ENDPOINT PARA DISPARAR EL ANÁLISIS ---
 # Cambiamos la ruta a /api/analyze para que haga match con el fetch del JS
 @app.post("/api/analyze")
@@ -48,7 +66,11 @@ async def start_analysis(
     h_matrix: str = Form(...),
     percentile: float = Form(..., ge=0.0, le=100.0),
     sigma: float = Form(..., ge=0.0, le=1.0),
-    esp: float = Form(..., ge=1.0, le=7.0)
+    esp: float = Form(..., ge=1.0, le=7.0),
+    # El CSV de secuencia (Label, X, Y, Z, DetonatingTime). Es OPCIONAL: sin él
+    # el análisis corre igual y produce las mismas trayectorias, solo que el job
+    # queda sin malla y ninguna vista puede decir de qué tiro salió cada roca.
+    detonation_sequence: UploadFile = File(None)
 ):
     # 1. Parsear y validar los strings JSON que vienen del form
     try:
@@ -75,6 +97,30 @@ async def start_analysis(
         "expected_projection_zone": expected_zone_parsed,
         "parametros": {"percentile": percentile, "sigma": sigma, "esp": esp},
     }
+
+    # La malla de tiros, si vino el CSV. Se guardan las dos cosas a propósito:
+    # el texto crudo es la fuente de verdad (pesa ~5 KB y deja el job
+    # autocontenido: si mañana cambia la forma de proyectar, se reproyecta sin
+    # pedirle el archivo de nuevo al usuario) y `malla` es el resultado ya
+    # proyectado, listo para dibujar.
+    #
+    # Un CSV mal formado NO tumba el análisis: se anota el error en `entrada` y
+    # el pipeline sigue. Perder la asociación es malo; perder también las
+    # trayectorias por una fila rara de Excel sería peor.
+    if detonation_sequence is not None and detonation_sequence.filename:
+        crudo = await detonation_sequence.read()
+        entrada["secuencia"] = {
+            "archivo": detonation_sequence.filename,
+            "csv": crudo.decode("utf-8-sig", errors="replace"),
+        }
+        try:
+            entrada["malla"] = malla_utils.desde_csv(
+                crudo, h_matrix_parsed, fps=_fps_de(video_path)
+            )
+            print(f"[malla] {entrada['malla']['meta']['n_pozos']} pozos proyectados")
+        except Exception as e:
+            entrada["malla_error"] = str(e)
+            print(f"[malla] no se pudo procesar el CSV: {e}")
     with Session(engine) as session:
         new_job = Job(status="Iniciando...", progress=0, entrada=entrada)
         session.add(new_job)
