@@ -2,6 +2,27 @@ import os
 import json
 import shutil
 import asyncio
+import sys
+
+# La consola de Windows sin UTF-8 usa cp1252, que no sabe escribir los emojis
+# de nuestros `print` de progreso: el print lanza UnicodeEncodeError y, como
+# ocurre dentro del pipeline, MATA LA CORRIDA ENTERA. Nos tumbo un analisis en
+# el nodo 12, tras 98 segundos de trabajo ya hecho.
+#
+# Se arregla aca, en el punto de entrada, y no quitando los emojis de cada
+# print: los prints se siguen escribiendo y el proximo emoji volveria a
+# reventar. Con `errors="replace"` lo peor que pasa es que un caracter salga
+# como "?" en una consola vieja, que es exactamente lo que un mensaje de
+# progreso puede permitirse.
+#
+# En Docker no se nota porque ahi la salida ya es UTF-8; solo aparece al correr
+# el core nativo en Windows.
+for _flujo in (sys.stdout, sys.stderr):
+    try:
+        _flujo.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass  # flujo redirigido o sin soporte: no vale la pena tumbar el arranque
+
 from fastapi import FastAPI, BackgroundTasks, WebSocket, WebSocketDisconnect, File, UploadFile, Form, HTTPException
 from sqlmodel import SQLModel, Session
 from contextlib import asynccontextmanager
@@ -70,7 +91,19 @@ async def start_analysis(
     # El CSV de secuencia (Label, X, Y, Z, DetonatingTime). Es OPCIONAL: sin él
     # el análisis corre igual y produce las mismas trayectorias, solo que el job
     # queda sin malla y ninguna vista puede decir de qué tiro salió cada roca.
-    detonation_sequence: UploadFile = File(None)
+    detonation_sequence: UploadFile = File(None),
+    # El ancla temporal, en frames del VIDEO ORIGINAL. Los dos son opcionales.
+    #
+    # El CSV de secuencia da tiempos RELATIVOS entre pozos, no el frame en que
+    # arranca la secuencia dentro del clip. Sin ese origen no se puede cruzar el
+    # nacimiento de una traza con la detonación de un pozo, y el calce temporal
+    # queda dependiendo de un slider que el usuario mueve a ojo.
+    #
+    # El número ya existe aguas arriba y hasta ahora se tiraba: el blast
+    # detector detecta la detonación y el usuario elige dónde cortar. Los dos
+    # viven en el navegador (paso 2) y morían ahí.
+    frame_detonacion: int = Form(None),   # lo que detectó el blast detector
+    frame_inicio_corte: int = Form(None), # dónde cortó el usuario
 ):
     # 1. Parsear y validar los strings JSON que vienen del form
     try:
@@ -97,6 +130,25 @@ async def start_analysis(
         "expected_projection_zone": expected_zone_parsed,
         "parametros": {"percentile": percentile, "sigma": sigma, "esp": esp},
     }
+
+    # El ancla sale de restar los dos, pero se guardan LOS TRES: el ancla es lo
+    # que la vista usa, y los crudos permiten recalcularla si mañana cambia el
+    # criterio, sin volver a pedirle nada al usuario. Mismo principio que
+    # guardar el CSV crudo además de la malla proyectada.
+    #
+    # El resultado es el frame del CLIP en que ocurre la primera detonación, que
+    # es el origen al que el CSV de secuencia le suma sus tiempos relativos.
+    # Si el usuario acepta la sugerencia del detector tal cual, da ~6: el blast
+    # detector reporta a propósito unos frames antes de donde dispara, para que
+    # el corte no se coma el destello.
+    if frame_detonacion is not None and frame_inicio_corte is not None:
+        entrada["recorte"] = {
+            "frame_detonacion": frame_detonacion,
+            "frame_inicio_corte": frame_inicio_corte,
+            "ancla_frames": frame_detonacion - frame_inicio_corte,
+        }
+        print(f"[ancla] {frame_detonacion} - {frame_inicio_corte} = "
+              f"{frame_detonacion - frame_inicio_corte} frames")
 
     # La malla de tiros, si vino el CSV. Se guardan las dos cosas a propósito:
     # el texto crudo es la fuente de verdad (pesa ~5 KB y deja el job

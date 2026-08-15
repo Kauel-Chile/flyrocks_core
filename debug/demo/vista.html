@@ -440,11 +440,15 @@ async function cargar(){
   $("fK").value = A.k;      $("vK").textContent = A.k.toFixed(2);
   $("fSig").value = A.sigma; $("vSig").textContent = A.sigma + "°";
 
-  // El ancla temporal viene medida en un caso congelado y en 0 en un análisis
-  // del core, que no tiene cómo saberla: el CSV da tiempos relativos entre
-  // pozos, no dónde arranca la secuencia dentro del video.
+  // El ancla temporal: en qué frame del clip revienta el primer tiro. Viene
+  // medida en un caso congelado, y en un análisis del core sale de los dos
+  // frames del paso 2 que ahora manda el wizard (detonación detectada menos
+  // inicio del corte). Solo cae a 0 si el job no los trae.
   const ancla = C.meta.frame_detonacion ?? C.malla.meta.frame_inicio ?? 0;
   C.meta.frame_detonacion = ancla;
+  // Un ancla mayor que el tope del control lo dejaría clavado en 300 mientras
+  // el valor real es otro: el control mentiría sobre el estado de la vista.
+  if (ancla > +$("fAncla").max) $("fAncla").max = ancla;
   $("fAncla").value = ancla; $("vAncla").textContent = ancla + "f";
 
   // Un caso viejo (exportado antes de rescatar el eje temporal del pipeline)
@@ -515,12 +519,22 @@ async function cargarDesdeCore(api, job){
   // vista sirve igual para filtrar, descartar y dibujar, y la asociación se
   // avisa como no disponible en vez de fallar.
   const fps = (E.malla && E.malla.meta.fps) || 29.97;
+
+  // El ancla temporal: en qué frame del CLIP revienta el primer tiro. El CSV da
+  // tiempos RELATIVOS entre pozos, así que sin este origen no hay calce temporal.
+  //
+  // Si el wizard mandó los dos frames del paso 2, el core ya hizo la resta y el
+  // control arranca en el valor correcto: pasa de ser una adivinanza a una
+  // corrección fina. Si no vinieron (un wizard viejo, o un job de antes de este
+  // cambio), se cae a 0 y el usuario lo busca a ojo, como antes.
+  const ancla = E.recorte?.ancla_frames ?? E.malla?.meta?.frame_inicio ?? 0;
+  if (E.recorte) {
+    console.info(`[ancla] ${E.recorte.frame_detonacion} - `
+      + `${E.recorte.frame_inicio_corte} = ${ancla} frames (del job)`);
+  }
+
   const malla = (E.malla && E.malla.pozos && E.malla.pozos.length)
-    ? { meta: { ...E.malla.meta,
-                // El CSV da tiempos RELATIVOS entre pozos, no el instante del
-                // video en que arranca la secuencia. El core lo deja en null y
-                // el ancla la pone el usuario con el control de la vista.
-                frame_inicio: E.malla.meta.frame_inicio ?? 0, fps },
+    ? { meta: { ...E.malla.meta, frame_inicio: ancla, fps },
         pozos: E.malla.pozos }
     : { meta: { t_min: 0, t_max: 1, frame_inicio: 0, fps,
                 A: [[1, 0], [0, 1]], t: [0, 0] }, pozos: [] };
@@ -528,7 +542,7 @@ async function cargarDesdeCore(api, job){
 
   C = {
     meta: { nombre: `job ${job.slice(0, 8)}`, video: E.video || "—",
-            ancho: W, alto: H, fps, frame_detonacion: 0,
+            ancho: W, alto: H, fps, frame_detonacion: ancla,
             generado: new Date().toISOString().slice(0, 16).replace("T", " ") },
     calibra: { h_matrix: h3, rms_px: null,
                escala_px_por_m: +escala.toFixed(4),
