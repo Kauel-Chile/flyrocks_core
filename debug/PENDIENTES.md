@@ -50,10 +50,14 @@ solo funciona con el 0 por accidente (`-Inf >= -Inf`).
 Con 2 puntos la tangente inicial no es confiable — hay que exigir un largo
 mínimo y decirlo, no asociar a ciegas.
 
-**Bug del core a reportar:** los `print` con emoji de `trajectory_filters.py:48`
-revientan el pipeline entero con `UnicodeEncodeError` en consola Windows sin
-UTF-8 (mató una corrida en el nodo 12, tras 98 s). A ellos no les pasa porque
-corren en Docker.
+**~~Bug del core~~ ✅ ARREGLADO 2026-08-13.** Los `print` con emoji reventaban el
+pipeline entero con `UnicodeEncodeError` en consola Windows sin UTF-8 (mató una
+corrida en el nodo 12, tras 98 s; a ellos no les pasa porque corren en Docker).
+Se arregló **en el punto de entrada** (`src/main.py`), reconfigurando `stdout` y
+`stderr` a UTF-8 con `errors="replace"`, y no quitando los cinco emojis: los
+prints se siguen escribiendo y el próximo emoji volvería a reventar. `debug/
+caso_export.py` ya traía el mismo fix, que es la razón por la que exportar casos
+nunca falló y sí fallaba el core nativo.
 
 **Siguiente:** probar el visor en navegador, enganchar la asociación (P0) y
 recién después los entregables nuevos (heatmap, proyección de tiros).
@@ -157,9 +161,25 @@ El último es correcto: el GridSearch (nodo 4, 58 s) depende del clustering
   tensor de 45 MB quedaba escrito doce veces: **659 MB medidos por corrida,
   contra 60 MB ahora**.
 
-**Pendiente:** la caché **crece sin límite** — cada configuración distinta suma
-objetos (74 MB tras tres). Falta una purga por antigüedad o por tamaño máximo.
-No urge en desarrollo, sí antes de que esto llegue a un cliente.
+**~~La caché crece sin límite~~ ✅ PURGA HECHA 2026-08-13.** Techo configurable
+`CACHE_MAX_MB` (2 GB por defecto ≈ 30 configuraciones; 0 = sin límite), y se
+purga al **final** de cada corrida — así lo recién calculado ya cuenta y una
+purga lenta no retrasa el primer nodo.
+
+Dos cosas que el test dejó claras (`debug/probar_purga.py`, 16 comprobaciones):
+
+- **No se puede borrar por entrada.** Los objetos están deduplicados: varios
+  índices apuntan al mismo `objetos/<hash>.bin`, que es justo lo que baja una
+  corrida de 659 MB a 60 MB. Es mark & sweep — se descartan entradas por
+  antigüedad y después se borra **solo lo que ya no referencia nadie**.
+- **La entrada más nueva nunca se purga.** Con un techo menor que una corrida,
+  la versión inicial borraba lo que el pipeline acababa de escribir: la caché
+  quedaba escribiendo y borrando lo mismo en cada vuelta, sin dar nunca un HIT y
+  pagando siempre el costo de escribirla. Ahora se pasa del techo y lo dice en
+  el log.
+
+Que la purga falle no puede costar el resultado del pipeline, que es lo caro:
+va envuelta en try/except y solo registra un aviso.
 
 `caso_export.py` acepta ahora `PERCENTILE`, `SIGMA` y `ESP` por variable de
 entorno, para iterar sin editar el archivo.
@@ -212,9 +232,72 @@ la malla** y sin malla no hay asociación.
 la leía como 3×3 anidada → `NaN` en silencio → escala 1 px/m. Se normaliza con
 `aH3()`, igual que el `reshape(3,3)` que ya hacía el core.
 
-**Ancla temporal pendiente:** el CSV da tiempos *relativos* entre pozos, no el
-frame del video donde arranca la secuencia (`frame_inicio` queda en `null`). Hoy
-lo fija el usuario en la vista; el camino automático es [[P8]] (destello).
+**~~Ancla temporal~~ ✅ CABLEADA 2026-08-13.** El wizard manda ahora los dos
+frames del paso 2 (`frame_detonacion` y `frame_inicio_corte`, ambos opcionales),
+el core guarda los crudos **y** la resta en `entrada.recorte`, y la vista arranca
+el control «1ª detonación» en ese valor en vez de en 0. El control pasa de ser
+una adivinanza a una corrección fina.
+
+Se guardan los tres números, no solo el ancla: los crudos permiten recalcularla
+si mañana cambia el criterio, sin volver a pedirle nada al usuario — el mismo
+principio que guardar el CSV crudo además de la malla proyectada. Si el job no
+los trae (un wizard viejo), la vista cae a 0 como antes.
+
+El razonamiento original, que sigue valiendo:
+
+
+El CSV da tiempos *relativos* entre pozos, no el frame del video donde arranca la
+secuencia. Hoy la vista trae un slider («1ª detonación») que el usuario mueve a
+ojo. Pero **el sistema ya conoce el número y lo tira**, igual que pasaba con el CSV:
+
+- El blast detector **ya detecta** la detonación (`services/analysis.py:69`), y
+  reporta a propósito **6 frames antes** de donde dispara
+  (`f_detonacion = (frame_idx - 1) - buffer_frames.maxlen`, con `maxlen = 5`),
+  para que el corte no se coma el destello.
+- El recorte usa el marcador **del usuario**, no la sugerencia:
+  `inicio_frame_usuario` (`routers/video.py:137`). Así que el desfase real depende
+  de cuánto lo haya arrastrado.
+- Ninguno de los dos viaja al core: mueren en el navegador en el paso 2.
+
+Con esos dos números el ancla sale calculada y el control pasa a ser una
+corrección en vez de una adivinanza:
+
+    ancla = f_detonacion_detectado - frame_inicio_del_corte
+
+Si el usuario acepta la sugerencia tal cual, el ancla vale **~6 frames**. El 48
+del caso `3160-789` es nuestro: ese clip lo cortamos a mano (12,5 s → 27,6 s) con
+1,6 s de aire por delante, no lo produjo el blast detector.
+
+Detectar el destello desde el core ([[P8]]) sigue siendo válido, pero es el
+camino caro para un dato que ya está medido aguas arriba.
+
+### El wizard ya no pierde el análisis al recargar ✅ **2026-08-13**
+
+Tres cosas que hacían del paso 3 un callejón sin salida, todas del flujo
+original (no las introdujimos nosotros):
+
+- **Un F5 dejaba el análisis inalcanzable.** El estado del wizard son `useState`
+  en memoria; al recargar se perdía el `job_id` aunque el core tuviera el job
+  entero. Ahora el id queda en `localStorage` al lanzarlo y el paso 4 lo retoma,
+  avisando que es trabajo recuperado. Funciona **porque** el core ya guarda su
+  contexto completo ([[P17]]): con el id basta para reconstruir la vista.
+- **El paso 3 rebotaba al 4.** Su `useEffect` de navegación corre también al
+  montar y nadie limpiaba `projections`, así que al volver saltaba de inmediato
+  al paso 4: no se podían tocar los parámetros sin reiniciar el wizard. Ahora
+  navega solo cuando el análisis **termina**, no cuando el paso se monta.
+- **Y el botón «siguiente» estaba muerto al volver.** El disparo era
+  `if (csvFile)`, con `csvFile` en estado local del paso, que se pierde al
+  desmontarse. Se usa también `fileCsv` del contexto, que sobrevive.
+
+Al relanzar se sueltan las proyecciones anteriores: si no, se mostraban las
+viejas como si fueran de la corrida en curso.
+
+**Ojo:** relanzar **crea un job nuevo**, no reusa el anterior — sube el video de
+nuevo y corre el pipeline entero. El job viejo queda huérfano hasta que el
+limpiador lo barre. Que se pueda reprocesar sin reiniciar el wizard es la mejora;
+que sea barato, no.
+
+---
 
 **Observación sobre el front del colega:** `Step3.tsx:190-195` mapea solo
 `X, Y, Z, Label` — **descarta `DetonatingTime` al leer**. Por eso en su vista no
@@ -245,9 +328,30 @@ dos SQLite y todos los archivos: **el cliente empezaba de cero en cada sesión**
   defecto** — lo que empiezas hoy sigue mañana. El equipo interno la sube por
   entorno sin tocar código.
 
-**Ojo:** el compose canónico del proyecto no está claro. El de la raíz del
-workspace estaba desactualizado y el que usa el cliente vive dentro del paquete
-`Detovision_V3/Detovision/mvp/`. Hay que decidir cuál manda y sincronizarlos.
+**El compose canónico ya está decidido ✅ 2026-08-13:** vive en
+`flyrocks_core/entrega/docker-compose.yml`, con rutas planas — la forma que
+tiene dentro del paquete del cliente, que es idéntica a la de
+`detovision_standalone/`.
+
+Se revisó el paquete real (`Detovision_V3/Detovision/`) y **confirma P16 al pie
+de la letra**: su compose no tiene volúmenes, ni retención configurable, y el
+blast detector sigue bajo su nombre de la v3 (`./flyrocks`). El `.bat` hace
+exactamente lo que decía la nota — `docker compose down` al iniciar y al
+detener, `up -d --build` para levantar — así que **el arreglo funciona sin
+tocarlo**.
+
+`entrega/armar_paquete.py` genera el paquete completo desde el workspace: 13,7 MB
+contra los varios GB de acá. Lo que decide, y por qué, en `entrega/README.md`.
+Dos cosas que no son obvias y que el script resuelve: **republica la vista antes
+de copiar** (viaja como copia generada en `public/`, y si no se enteraría nadie
+hasta que el cliente la abre) y **deja viajar el `.env` del frontend**, porque
+Vite resuelve las `VITE_URL_*` en tiempo de build dentro del contenedor y sin él
+la app se construye sin backend.
+
+**Queda una duplicación:** el compose de la raíz del workspace tiene las mismas
+tres correcciones pero con rutas `./detovision_standalone/<servicio>`, para
+levantar en desarrollo. Son dos archivos que van a divergir; hay que decidir si
+el de desarrollo se deriva de este o se elimina.
 
 ---
 
@@ -461,11 +565,19 @@ detector. Las «Fuera de vista» van con textura: su distancia está **censurada
 80 tiros con material · **109 de 763 rocas sobre el radio de evacuación** de
 100 m · alcance máximo 249 m, mediana 10 m.
 
-**Deuda conocida:** para poder probar `salidas.py` sin navegador se generó el
-entregable con un script Node que **replica** el asociador de la vista. Son dos
-implementaciones del mismo algoritmo y van a divergir. Al retomar: extraer el
-asociador a un `demo/asociacion.js` que la vista cargue con `<script src>` y el
-CLI pueda importar.
+**~~Deuda del asociador duplicado~~ — NO APLICA, verificado 2026-08-13.** Estaba
+anotado que `salidas.py` consumía un entregable generado por un script Node que
+replicaba el asociador, y que ambas implementaciones iban a divergir. Al ir a
+extraer `demo/asociacion.js` resultó que **ese script no existe en el repo**: fue
+temporal y no quedó. Hoy `salidas.py` consume `entregable.json` tal como lo
+exporta la vista, así que en el camino del entregable hay **una sola**
+implementación del asociador y no hay nada que extraer.
+
+Lo que sí queda es `debug/test_asociacion.py`, que replica el algoritmo — pero de
+`demo/trayectorias.html` (la demo vieja de trazos a mano), y para correr el banco
+de sintéticos, no para producir entregables. Si algún día se toca la cuña o el
+softmax, ese archivo hay que actualizarlo a mano: es el único punto de deriva que
+queda, y es de un experimento, no de la salida al cliente.
 
 ---
 
@@ -482,6 +594,19 @@ después; ninguno contamina un entregable.
   1.000 (los trazos cortos de 2–3 puntos, perfectamente rectos).
 - **Rendimiento del zoom sobre la máscara 4K.** No medido en uso real; si va a
   tirones, separar la capa de fondo en su propio canvas cacheado.
+- **`invertir()` muta el tramo original al unir sin eje temporal**
+  (`vista.html:1970-1971`). Los tramos unidos quedan *descartados*, no borrados,
+  justo para poder deshacer la unión — pero en la rama geométrica el original ya
+  quedó dado vuelta, así que restaurarlo no devuelve lo que había. Solo afecta
+  trazos dibujados a mano (los del pipeline siempre traen `frames` y nunca se
+  invierten). Arreglo: invertir sobre una copia. Anotado 2026-08-13, sin urgencia.
+- **El guardado es manual y no hay red de seguridad.** «Guardar avance» descarga
+  `caso_<nombre>_editado.json` y «Cargar» lo reabre — pero no hay persistencia
+  automática (verificado: ni `localStorage` ni `beforeunload`). Un F5 o cerrar la
+  pestaña borra descartes, uniones, trazos manuales, `k`, nadir y ancla **sin
+  aviso**. Que recargar devuelva el caso virgen es útil y hay que conservarlo; lo
+  que falta es que no se pierda trabajo por un atajo mal apretado. Mínimo:
+  `beforeunload` si hay ediciones sin guardar. Anotado 2026-08-13.
 - **Nadir: sigue en el centro del cuadro.** Solo importa cuando `k > 0`, así que
   el orden correcto es calibrar `k` primero y ajustar el nadir después.
 

@@ -17,6 +17,7 @@ Lo que produce:
     debug/casos/<nombre>/
         caso.json      indice con calibracion, zonas, malla y proyecciones
         clip.mp4       el recorte que consumio el pipeline
+        clip_web.mp4   el mismo recorte en H.264, para el fondo de video
         frame.png      frame de referencia (terreno seco, pre-tronadura)
         crudo.json     salida tal cual del pipeline, sin normalizar
 
@@ -186,6 +187,49 @@ def generar_clip(destino):
         f"{destino.stat().st_size / 1e6:.0f} MB, {time.time() - t0:.0f}s")
 
 
+def generar_clip_web(origen, destino):
+    """El mismo clip, pero en un codec que el navegador sepa reproducir.
+
+    `generar_clip` escribe con el fourcc `mp4v` de OpenCV, que es MPEG-4 parte
+    2: el pipeline lo lee sin problema, pero ningun navegador lo reproduce (se
+    ve negro y sin error claro). La vista necesita H.264, asi que se deriva una
+    copia y se deja al lado. No se reemplaza el original: el pipeline consume
+    ese y no hay razon para tocarle el codec.
+
+    Los keyframes van cada 15 cuadros (`-g 15`) a proposito: con el GOP largo
+    por defecto, avanzar de a un frame obliga al navegador a decodificar desde
+    el keyframe anterior y el salto se siente pegajoso. Cuesta algo de tamano y
+    lo vale, porque frame a frame es justo para lo que se usa.
+    """
+    if destino.exists():
+        log(f"clip web ya existe, lo reuso ({destino.stat().st_size / 1e6:.0f} MB)")
+        return
+    if not origen.exists():
+        return
+
+    import shutil
+    import subprocess
+
+    if not shutil.which("ffmpeg"):
+        log("OJO: no hay ffmpeg en el PATH: la vista se queda sin fondo de video")
+        return
+
+    log("convirtiendo el clip a H.264 para la vista...")
+    t0 = time.time()
+    r = subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-i", str(origen),
+         "-c:v", "libx264", "-preset", "veryfast", "-crf", "24",
+         "-g", "15", "-keyint_min", "15", "-sc_threshold", "0",
+         "-pix_fmt", "yuv420p", "-an", "-movflags", "+faststart",
+         str(destino)],
+        capture_output=True, text=True)
+    if r.returncode != 0:
+        log(f"ffmpeg fallo: {r.stderr.strip()[:300]}")
+        destino.unlink(missing_ok=True)
+        return
+    log(f"clip web: {destino.stat().st_size / 1e6:.0f} MB, {time.time() - t0:.0f}s")
+
+
 def exportar_frame(destino):
     if destino.exists():
         return
@@ -324,6 +368,7 @@ def main():
     # --- etapas
     clip = caso_dir / "clip.mp4"
     generar_clip(clip)
+    generar_clip_web(clip, caso_dir / "clip_web.mp4")
     exportar_frame(caso_dir / "frame.png")
     crudo = correr_pipeline(clip, zonas, h_matrix, caso_dir / "crudo.json")
 
