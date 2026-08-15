@@ -41,6 +41,15 @@ logger = logging.getLogger(__name__)
 CACHE_ACTIVA = os.getenv("PIPELINE_CACHE", "1") not in ("0", "false", "False")
 CACHE_DIR = Path(os.getenv("DATA_DIR", "data")) / "cache"
 
+# Techo de la cache en MB. Cada configuracion distinta suma objetos y nadie los
+# borra nunca: medido, tres configuraciones dejaban 74 MB y eso crece sin
+# limite. En desarrollo da igual, en la maquina de un cliente no.
+#
+# 2 GB por defecto son ~30 configuraciones del caso de referencia (60 MB cada
+# una), de sobra para trabajar sin que la carpeta se coma el disco. Con 0 (o
+# negativo) no se purga nunca.
+CACHE_MAX_MB = float(os.getenv("CACHE_MAX_MB", "2048"))
+
 
 def _hash_json(obj: Any) -> str:
     """Hash estable de cualquier cosa serializable a JSON."""
@@ -178,6 +187,87 @@ def _escribir(ruta: Path, ctx: Dict[str, Any]) -> bool:
         return False
 
 
+def purgar(limite_mb: float = None) -> int:
+    """Baja la cache del techo configurado tirando las entradas mas viejas.
+
+    Devuelve los bytes liberados.
+
+    Por que no basta con borrar los `.pkl` viejos: los objetos estan
+    DEDUPLICADOS. Una entrada es un indice {clave: hash} y varios indices
+    apuntan al mismo `objetos/<hash>.bin` — de hecho ese es el punto del diseño,
+    y es lo que baja una corrida de 659 MB a 60 MB. Borrar los objetos de la
+    entrada que se va se llevaria por delante los de las que se quedan. Asi que
+    esto es mark & sweep: se descartan entradas por antiguedad y despues se
+    borra solo lo que ya no referencia NADIE.
+
+    Se purga por antiguedad de la entrada (mtime). La corrida que acaba de
+    escribir es la mas nueva, asi que nunca se purga a si misma.
+
+    Concurrencia: si otra corrida esta leyendo un objeto en el momento en que se
+    borra, `ejecutar` ya trata el fallo de lectura como cache miss y recalcula
+    (ver el try/except del HIT). El peor caso es perder tiempo, no romper.
+    """
+    limite = (CACHE_MAX_MB if limite_mb is None else limite_mb) * 1024 * 1024
+    if limite <= 0 or not CACHE_DIR.exists():
+        return 0
+
+    entradas = sorted(CACHE_DIR.glob("*.pkl"), key=lambda p: p.stat().st_mtime)
+    objetos = {p.name: p.stat().st_size for p in OBJ_DIR.glob("*.bin")} if OBJ_DIR.exists() else {}
+    total = sum(objetos.values()) + sum(p.stat().st_size for p in entradas)
+    if total <= limite:
+        return 0
+
+    # Que objetos referencia cada entrada. Un indice ilegible se trata como
+    # entrada muerta: no referencia nada y se va en la primera pasada.
+    refs: Dict[Path, set] = {}
+    for e in entradas:
+        try:
+            with open(e, "rb") as f:
+                refs[e] = set(pickle.load(f).values())
+        except Exception:
+            refs[e] = set()
+
+    # Se descartan de la mas vieja a la mas nueva hasta entrar en el techo,
+    # midiendo en cada paso lo que quedaria vivo de verdad.
+    #
+    # La ULTIMA nunca se condena. Es la que el pipeline acaba de escribir, y si
+    # el techo quedo por debajo de lo que pesa una corrida, purgarla dejaria la
+    # cache escribiendo y borrando lo mismo en cada vuelta: nunca un HIT, y el
+    # costo de escribirla pagado siempre. Mejor pasarse del techo y decirlo.
+    condenadas: List[Path] = []
+    for i, e in enumerate(entradas[:-1]):
+        condenadas.append(e)
+        vivos = set().union(*(refs[x] for x in entradas[i + 1:]))
+        quedaria = (
+            sum(t for h, t in objetos.items() if h.removesuffix(".bin") in vivos)
+            + sum(p.stat().st_size for p in entradas[i + 1:])
+        )
+        if quedaria <= limite:
+            break
+    else:
+        if entradas:
+            logger.warning(
+                f"[cache] el techo ({limite / 1024 / 1024:.0f} MB) es menor que "
+                f"una sola corrida: se conserva la ultima entrada igual. "
+                f"Sube CACHE_MAX_MB o apaga la cache con PIPELINE_CACHE=0.")
+
+    vivos = set().union(*(refs[x] for x in entradas if x not in condenadas)) if len(condenadas) < len(entradas) else set()
+    liberado = 0
+    for e in condenadas:
+        liberado += e.stat().st_size
+        e.unlink(missing_ok=True)
+    for nombre, tam in objetos.items():
+        if nombre.removesuffix(".bin") not in vivos:
+            (OBJ_DIR / nombre).unlink(missing_ok=True)
+            liberado += tam
+
+    logger.info(
+        f"[cache] purga: {len(condenadas)} entradas y "
+        f"{liberado / 1024 / 1024:.0f} MB liberados "
+        f"(techo {limite / 1024 / 1024:.0f} MB)")
+    return liberado
+
+
 def ejecutar(nodes: List[PipelineNode], context: Dict[str, Any],
              progreso=None) -> Dict[str, Any]:
     """Corre la cadena reusando lo que ya este calculado.
@@ -233,5 +323,14 @@ def ejecutar(nodes: List[PipelineNode], context: Dict[str, Any],
 
         if CACHE_ACTIVA and node.cacheable:
             _escribir(CACHE_DIR / f"{llaves[i]}.pkl", context)
+
+    # Al final y no al arrancar: asi lo que se acaba de calcular ya cuenta, y
+    # una purga lenta no retrasa el primer nodo. Que falle no puede costar el
+    # resultado del pipeline, que es lo caro.
+    if CACHE_ACTIVA:
+        try:
+            purgar()
+        except Exception as e:
+            logger.warning(f"[cache] no se pudo purgar ({e}); se sigue igual")
 
     return context
