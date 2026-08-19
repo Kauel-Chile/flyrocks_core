@@ -11,6 +11,50 @@
 
 ## Activos (lo que está en la mesa ahora)
 
+### P18 — Recortar trayectorias: quedarse con el tramo bueno ⬅ **pedido 2026-08-18, esperando go**
+**Estado:** anotado, sin empezar. El usuario da el go mañana.
+
+Hoy una trayectoria es todo o nada: el lazo la descarta entera. Pero hay trazas
+que están **bien en un tramo y mal en otro** —un zigzag imposible a la mitad, o
+una cola que se fue con el humo— y descartarlas completas tira información
+buena.
+
+**Lo que se pide:** poder cortar la parte que no corresponde a la realidad,
+**quedarse con el resto y seguir trabajando con eso** (filtros, asociación al
+pozo, entregable). Es decir, el recorte tiene que producir una trayectoria de
+primera clase, no una anotación cosmética.
+
+Preguntas a resolver antes de codificar:
+- ¿La herramienta es el mismo lazo (que corta lo que rodea) u otra distinta
+  (tijera: dos clics sobre el trazo y se elimina el tramo entre ellos)?
+- Si el corte parte una traza en dos tramos válidos, ¿quedan dos trayectorias
+  independientes o una con hueco?
+- El `estado`/`razon` del modelo actual es por trayectoria completa. Recortar
+  obliga a que sea **por punto**, o a materializar la traza recortada con su
+  origen anotado (`fuente: "recorte de <id>"`), como ya se hace con las
+  dibujadas a mano.
+- El entregable JSON tiene que decir qué se recortó: si el cliente pregunta por
+  qué una traza mide la mitad, la respuesta no puede ser «alguien la editó».
+
+### P19 — Unir trayectorias debería completar la parábola, no la recta ⬅ **pedido 2026-08-18**
+**Estado:** anotado, sin empezar.
+
+`unirTrayectorias` empalma los dos extremos **en línea recta**. Para dos
+fragmentos de un mismo vuelo eso es visualmente falso: entre ellos la roca
+siguió una **parábola**, y el tramo recto la subestima justo donde más importa
+(el punto alto del vuelo, que es el de largo alcance).
+
+Ya está resuelto el caso hermano: `tramoOrigen()` empalma pozo → inicio de traza
+con una Bézier cuadrática apoyada en la tangente inicial, precisamente para que
+no haya quiebre. La unión debería hacer lo mismo con **las dos tangentes** (la
+del final del primer fragmento y la del inicio del segundo).
+
+Ojo con lo que ya sabemos (ver `PARABOLAS.md`): el dron no es perfectamente
+cenital, así que la parábola en pantalla es una cónica proyectada. Ajustar sobre
+los puntos reales de los dos fragmentos es más honesto que imponer una parábola
+teórica.
+
+
 ### P11 — Vista prototipo sobre caso congelado ⬅ **en construcción, 2026-08-09**
 **Estado:** caso congelado ✅ · visor v1 escrito, **sin probar en navegador**.
 
