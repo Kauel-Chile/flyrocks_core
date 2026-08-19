@@ -489,8 +489,15 @@ const $ = (id) => document.getElementById(id);
 async function cargar(){
   const params = new URLSearchParams(location.search);
   const job = params.get("job");
+  const api = params.get("api");
   if (job){
-    await cargarDesdeCore(params.get("api") || "http://localhost:8009", job);
+    await cargarDesdeCore(api || "http://localhost:8009", job);
+  } else if (api){
+    // Se entro a la vista SIN job pero contra un core. Pasa cuando alguien
+    // limpia el navegador o abre la vista a mano: el analisis existe, pero su
+    // id vivia solo en la memoria del wizard. En vez de un error, se ofrecen
+    // los analisis que el core tiene guardados.
+    return elegirJob(api);
   } else {
     await cargarDesdeArchivo(params.get("caso") || "3160-789");
   }
@@ -523,10 +530,65 @@ async function cargar(){
   $("grupoTemporal").style.opacity = A.hayTiempo ? 1 : 0.4;
   if (!A.hayTiempo)
     $("chkTemporal").parentElement.title = "Este caso no trae eje temporal: vuelve a exportarlo";
+  // A la consola y no a la pantalla: el cliente no tiene por que ver ids
+  // internos, y quien esta iterando sobre la vista abre igual el devtools.
+  // Esto es lo minimo para retomar el analisis desde fuera: el id, de donde
+  // salieron los artefactos y con cuanto material se esta trabajando.
+  console.info("[flyrocks] caso cargado", {
+    job: C.meta.job || new URLSearchParams(location.search).get("job") || null,
+    caso: C.meta.nombre,
+    video: C.meta.video,
+    trayectorias: C.proyecciones.length,
+    pozos: C.malla.pozos.length,
+    ancla_frames: C.meta.frame_detonacion,
+    cuadro: [C.meta.ancho, C.meta.alto],
+    artefactos: C.meta.artefactos || null,
+    congelar: (C.meta.job || new URLSearchParams(location.search).get("job"))
+      ? `uv run python debug/caso_desde_job.py ${C.meta.job || new URLSearchParams(location.search).get("job")}`
+      : null,
+  });
+
   document.body.classList.add("cargada");
   ajustarVista();
   recalcular();
 }
+
+// Los analisis guardados en el core, para elegir uno cuando no vino por URL.
+// Se apoya en GET /api/jobs, que existe justamente porque un job sin su id es
+// inalcanzable aunque el core lo tenga entero.
+async function elegirJob(api){
+  api = api.replace(/\/$/, "");
+  const caja = document.querySelector("#suelta .caja");
+  try {
+    const r = await fetch(`${api}/api/jobs`);
+    if (!r.ok) throw new Error(`el core respondio ${r.status}`);
+    const jobs = (await r.json()).filter(j => !j.is_running);
+    if (!jobs.length){
+      caja.innerHTML = "<h2>No hay análisis guardados</h2>"
+        + "<p>Corre uno desde el paso 3 del asistente.</p>";
+      return;
+    }
+    caja.innerHTML = "<h2>Elige un análisis</h2>"
+      + "<p>Se abrió la vista sin indicar cuál. Estos son los que el core tiene:</p>"
+      + `<div id="listaJobs"></div>`;
+    const lista = $("listaJobs");
+    for (const j of jobs){
+      const b = document.createElement("button");
+      b.className = "ent";
+      b.style.cssText = "margin:4px 0; display:block; text-align:left";
+      const cuando = j.creado_en ? String(j.creado_en).slice(0, 16).replace("T", " ") : "sin fecha";
+      b.textContent = `${j.trayectorias} trayectorias · ${j.video || "—"} · ${cuando}`;
+      b.title = j.id;
+      b.addEventListener("click", () => {
+        location.search = `?job=${encodeURIComponent(j.id)}&api=${encodeURIComponent(api)}`;
+      });
+      lista.appendChild(b);
+    }
+  } catch (e){
+    caja.innerHTML = `<h2>No se pudo consultar el core</h2><p>${e.message}</p>`;
+  }
+}
+
 
 async function cargarDesdeArchivo(caso){
   const base = `../casos/${caso}/`;
@@ -552,10 +614,10 @@ async function cargarDesdeArchivo(caso){
 // Arma el caso a partir de lo que el core guarda de un análisis.
 async function cargarDesdeCore(api, job){
   api = api.replace(/\/$/, "");
-  // El core todavía no publica el recorte por HTTP: el fondo de video queda
-  // para los casos congelados hasta que lo haga.
-  marcarClip(false, "un análisis del core todavía no publica el clip; "
-                  + "el fondo de video anda con casos congelados (?caso=…)");
+  // El clip del análisis, para el fondo de video. El wizard sube el recorte ya
+  // en H.264, así que el navegador lo reproduce tal cual: no hace falta el
+  // derivado `clip_web.mp4` que sí necesitan los casos congelados (esos salen
+  // del fourcc mp4v de OpenCV, que ningún navegador toca).
   const r = await fetch(`${api}/api/results/${job}`);
   if (!r.ok) throw new Error(`el core no conoce el job ${job} (${r.status})`);
   const J = await r.json();
@@ -566,9 +628,34 @@ async function cargarDesdeCore(api, job){
     throw new Error("este job es anterior al guardado de la calibración: "
                   + "vuelve a correr el análisis");
 
+  // Los artefactos de ESTE análisis: máscara, frame de referencia y el clip.
+  //
+  // Cada job los tiene en su propia carpeta. Antes eran nombres fijos en una
+  // carpeta compartida, y eso hacía que abrir un job viejo mostrara la máscara
+  // del último análisis corrido — y que el navegador, viendo siempre la misma
+  // URL, sirviera la imagen cacheada del análisis anterior. Un job de antes de
+  // este cambio no trae `artefactos`: para esos se cae al nombre de siempre,
+  // que es lo único que existe en su caso.
+  const A = E.artefactos || {};
+  const ruta = (r) => `${api}/temp_videos/${r}`;
+
   // El tamaño del cuadro no viaja en la respuesta; se toma de la máscara, que
   // es del mismo tamaño que el video.
-  IMG.mascara = await cargarImg(`${api}/temp_videos/mascara_cambios.png`);
+  IMG.mascara = await cargarImg(ruta(A.mascara || "mascara_cambios.png"));
+
+  // El frame en color va aparte y sin await: pesa más y la vista tiene que
+  // poder dibujarse apenas llega la máscara.
+  if (A.frame) cargarImg(ruta(A.frame)).then(im => { IMG.frame = im; });
+
+  // El clip queda disponible como fondo de video, igual que en un caso
+  // congelado. Un job viejo no lo tiene guardado y el selector lo dice.
+  if (A.video){
+    CLIP.url = ruta(A.video);
+    marcarClip(true, "");
+  } else {
+    marcarClip(false, "este análisis es anterior al guardado del clip por job; "
+                    + "vuelve a correrlo y el fondo de video queda disponible");
+  }
   const W = IMG.mascara ? IMG.mascara.naturalWidth : 3840;
   const H = IMG.mascara ? IMG.mascara.naturalHeight : 2160;
 
@@ -619,6 +706,7 @@ async function cargarDesdeCore(api, job){
 
   C = {
     meta: { nombre: `job ${job.slice(0, 8)}`, video: E.video || "—",
+            job, artefactos: A,
             ancho: W, alto: H, fps, frame_detonacion: ancla,
             generado: new Date().toISOString().slice(0, 16).replace("T", " ") },
     calibra: { h_matrix: h3, rms_px: null,
