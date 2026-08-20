@@ -72,6 +72,11 @@ def main():
     ap.add_argument("job")
     ap.add_argument("nombre", nargs="?", help="carpeta del caso (default: job-XXXXXXXX)")
     ap.add_argument("--api", default=API)
+    ap.add_argument("--zip", action="store_true",
+                    help="comprime el caso para mandarlo por Drive")
+    ap.add_argument("--liviano", action="store_true",
+                    help="sin el clip original (se queda solo el H.264 de la "
+                         "vista): la mitad de peso")
     args = ap.parse_args()
 
     import httpx
@@ -181,6 +186,26 @@ def main():
     destino.write_text(json.dumps(caso, ensure_ascii=False), encoding="utf-8")
     log(f"  caso.json: {len(caso['proyecciones'])} trayectorias, "
         f"{len(caso['malla']['pozos'])} pozos, ancla {ancla}")
+    # El clip original solo sirve para reprocesar; para MIRAR la vista basta
+    # el derivado H.264. Quitarlo deja el caso a la mitad, que es la diferencia
+    # entre mandar 150 MB o 60 MB por Drive.
+    if args.liviano and clip.exists() and (caso_dir / "clip_web.mp4").exists():
+        clip.unlink()
+        log("  clip original descartado (--liviano)")
+
+    if args.zip:
+        import shutil as _sh
+        _sh.make_archive(str(CASOS / nombre), "zip", root_dir=str(CASOS),
+                         base_dir=nombre)
+        tam = (CASOS / (nombre + ".zip")).stat().st_size / 1e6
+        log(f"  {nombre}.zip: {tam:.0f} MB")
+        print()
+        print("  Para abrirlo en otro equipo: descomprimir en debug/casos/ y")
+        print("    uv run python debug/caso_serve.py")
+        print(f"    http://localhost:8770/demo/vista.html?caso={nombre}")
+        print()
+        return
+
     print(f"\n  listo. Para verlo:\n"
           f"    uv run python debug/caso_serve.py\n"
           f"    http://localhost:8770/demo/vista.html?caso={nombre}\n")

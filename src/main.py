@@ -19,6 +19,21 @@ from pathlib import Path
 #
 # En Docker no se nota porque ahi la salida ya es UTF-8; solo aparece al correr
 # el core nativo en Windows.
+import logging
+
+# El pipeline entero registra con `logger.info`, pero nadie configuraba el
+# logging: el root se queda en WARNING y esos mensajes se descartan en silencio.
+# Resultado, el nodo mas caro —el filtro de humo por IA, seis minutos de los
+# ocho que dura un analisis— era el unico del que no se veia una sola linea, ni
+# cuanto filtraba ni por donde iba. Solo se veian los `print` sueltos.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+    datefmt="%H:%M:%S",
+    stream=sys.stdout,
+    force=True,          # uvicorn ya instalo los suyos; este manda
+)
+
 for _flujo in (sys.stdout, sys.stderr):
     try:
         _flujo.reconfigure(encoding="utf-8", errors="replace")

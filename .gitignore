@@ -20,6 +20,7 @@ flyrocks.db
 # por su cuenta. Hay que ponerlos a mano donde el core los busque (ver V9.md).
 detovision_model_v18.onnx
 *.onnx
+!modelos/README.md
 
 # Residuos de correr el core desde la raiz del repo (antes de que los datos se
 # movieran a data/). Se quedan por compatibilidad con instalaciones viejas.
