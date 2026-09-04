@@ -8,14 +8,15 @@ logger = logging.getLogger(__name__)
 
 class TrajectoryCategorizationNode(PipelineNode):
     
-    def __init__(self, name: str = "11_TrajectoryCategorizer", margin_px: int = 5):
+    def __init__(self, name: str = "11_TrajectoryCategorizer", margin_px: int = 5, extrapolation_frames: int = 3):
         super().__init__(name)
         self.margin_px = margin_px
+        # Cuántos frames de inercia le perdonamos a una roca para asumir que salió del video
+        self.extrapolation_frames = extrapolation_frames 
 
     def run(self, context: Dict[str, Any]) -> Dict[str, Any]:
-        logger.info(f"[{self.name}] Iniciando categorización de trayectorias...")
+        logger.info(f"[{self.name}] Iniciando categorización con extrapolación cinemática...")
                 
-        # 1. Obtener datos del contexto
         trajectories = context.get("filtered_rocks_dict", {}) 
         safety_zone_raw = context.get("expected_projection_zone")
         video_path = context.get("video_path")
@@ -47,12 +48,8 @@ class TrajectoryCategorizationNode(PipelineNode):
             puntos_lista = traj_array[:, 1:3].astype(int).flatten().tolist()
             if not puntos_lista: continue
 
-            # El tensor viene ordenado por (id, t) desde HighVelocityFilterNode,
-            # asi que la columna 3 es el frame de cada punto y va en ascendente.
-            # Se exporta junto a los puntos porque sin el eje temporal no se
-            # puede cruzar la trayectoria con los tiempos de la secuencia de
-            # detonacion (causalidad y tiempo de vuelo).
             frames_lista = traj_array[:, 3].astype(int).tolist()
+            n_puntos = len(traj_array)
 
             first_x, first_y = float(traj_array[0, 1]), float(traj_array[0, 2])
             last_x, last_y = float(traj_array[-1, 1]), float(traj_array[-1, 2])
@@ -64,7 +61,33 @@ class TrajectoryCategorizationNode(PipelineNode):
             real_last_x, real_last_y = pts_metros[1][0]
             distancia_m = float(np.hypot(real_last_x - real_first_x, real_last_y - real_first_y))
 
+            is_out_of_view = False
+
+            # 1. Chequeo estático tradicional (La roca frenó literalmente tocando el borde)
             if last_x <= min_x or last_x >= max_x or last_y <= min_y or last_y >= max_y:
+                is_out_of_view = True
+            
+            # 2. Chequeo predictivo por velocidad (Compuerta de escape)
+            elif n_puntos >= 2:
+                # Tomamos un promedio de la velocidad en el último tramo (hasta 3 puntos atrás) para evitar ruido
+                pts_eval = min(3, n_puntos) 
+                prev_x, prev_y = float(traj_array[-pts_eval, 1]), float(traj_array[-pts_eval, 2])
+                frames_diff = float(traj_array[-1, 3] - traj_array[-pts_eval, 3])
+                
+                if frames_diff > 0:
+                    vx = (last_x - prev_x) / frames_diff
+                    vy = (last_y - prev_y) / frames_diff
+                    
+                    # Proyectamos la posición basándonos en la velocidad terminal
+                    fut_x = last_x + (vx * self.extrapolation_frames)
+                    fut_y = last_y + (vy * self.extrapolation_frames)
+                    
+                    # Si esa inercia lo sacaba del video, entonces es "Fuera de vista"
+                    if fut_x <= 0 or fut_x >= width or fut_y <= 0 or fut_y >= height:
+                        is_out_of_view = True
+
+            # Asignación final de la categoría
+            if is_out_of_view:
                 categoria = "Fuera de vista"
             else:
                 distancia_poly = cv2.pointPolygonTest(safety_polygon, (last_x, last_y), measureDist=False)
