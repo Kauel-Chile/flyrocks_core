@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 
 class TrajectoryCategorizationNode(PipelineNode):
     
-    def __init__(self, name: str = "11_TrajectoryCategorizer", margin_px: int = 5, extrapolation_frames: int = 3):
+    def __init__(self, name: str = "11_TrajectoryCategorizer", margin_px: int = 5, extrapolation_frames: int = 30):
         super().__init__(name)
         self.margin_px = margin_px
         # Cuántos frames de inercia le perdonamos a una roca para asumir que salió del video

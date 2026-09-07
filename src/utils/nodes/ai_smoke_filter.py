@@ -13,7 +13,7 @@ class AISmokeFilterNode(PipelineNode):
     """
     Proyecta ventanas temporales del tensor de eventos a 2D y utiliza
     una red neuronal ONNX para identificar y eliminar puntos asociados al humo.
-    Incluye optimización de RAM extrema (Early Downcasting, In-Place y Canvas uint8).
+    Soporta tensores int16 con signo aplicando magnitud absoluta sobre el canvas.
     """
     def __init__(
         self, 
@@ -74,11 +74,9 @@ class AISmokeFilterNode(PipelineNode):
             logger.warning(f"[{self.name}] No se encontró 'tensor_raw' o está vacío. Omitiendo.")
             return context
 
-        # --- EARLY DOWNCASTING ---
-        # Fuerza el tensor a uint16 inmediatamente. Todo el procesamiento en este
-        # nodo heredará este peso pluma (8 bytes por fila en total).
-        if tensor.dtype != np.uint16:
-            tensor = tensor.astype(np.uint16)
+        # FUERZA INT16 PARA SOPORTE DE SIGNOS
+        if tensor.dtype != np.int16:
+            tensor = tensor.astype(np.int16)
 
         if self._session is None:
             try:
@@ -94,7 +92,7 @@ class AISmokeFilterNode(PipelineNode):
         
         tensor_filtrado = []
         
-        # Canvas ultra ligero en 8 bits (grises de 0 a 255).
+        # El canvas de inferencia de IA no sabe qué son valores negativos
         canvas = np.zeros((max_y, max_x), dtype=np.uint8)
         
         logger.info(f"[{self.name}] Ejecutando inferencia en ventanas temporales (Escala: {self.escala*100:.0f}%)...")
@@ -108,8 +106,11 @@ class AISmokeFilterNode(PipelineNode):
             if len(puntos_ctx) > 0:
                 y_c = puntos_ctx[:, 1].astype(int)
                 x_c = puntos_ctx[:, 0].astype(int)
-                # Saturamos a 255 y mapeamos directo al canvas uint8
-                np.maximum.at(canvas, (y_c, x_c), np.clip(puntos_ctx[:, 3], 0, 255).astype(np.uint8))
+                
+                # ADAPTACIÓN SEGURA: Extraemos magnitud (abs), aplicamos clip y forzamos a uint8 
+                # Esto protege el canvas sin modificar el tensor_raw original
+                intensidades_abs = np.clip(np.abs(puntos_ctx[:, 3]), 0, 255).astype(np.uint8)
+                np.maximum.at(canvas, (y_c, x_c), intensidades_abs)
             
             prob_humo = self._obtener_probabilidad_humo(canvas)
             
@@ -130,7 +131,7 @@ class AISmokeFilterNode(PipelineNode):
             
             del prob_humo, puntos_ctx, puntos_app, x_idx, y_idx, mask_bounds, y_valid, x_valid, mask_prob
             
-        tensor_final = np.vstack(tensor_filtrado) if tensor_filtrado else np.empty((0, 4), dtype=np.uint16)
+        tensor_final = np.vstack(tensor_filtrado) if tensor_filtrado else np.empty((0, 4), dtype=np.int16)
         
         retencion = (len(tensor_final) / len(tensor)) * 100 if len(tensor) > 0 else 0
         logger.info(f"[{self.name}] Filtrado completado. Se conservaron {len(tensor_final)} pts ({retencion:.1f}%).")

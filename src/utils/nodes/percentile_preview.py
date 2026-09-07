@@ -26,9 +26,18 @@ class PercentilePreviewNode(PipelineNode):
         max_y = int(np.max(tensor[:, 1])) + 1
         
         canvas_raw = np.zeros((max_y, max_x), dtype=np.float32)
-        np.maximum.at(canvas_raw, (tensor[:, 1].astype(int), tensor[:, 0].astype(int)), tensor[:, 3])
+        
+        # --- CAMBIO CLAVE ---
+        # Extraemos la magnitud absoluta para que las rocas oscuras (valores negativos)
+        # no sean descartadas al chocar contra el fondo de ceros del canvas_raw.
+        intensidades_abs = np.abs(tensor[:, 3])
+        np.maximum.at(canvas_raw, (tensor[:, 1].astype(int), tensor[:, 0].astype(int)), intensidades_abs)
         
         mask_validos = canvas_raw > 0
+        
+        # Estas intensidades ahora son estrictamente magnitudes (energía pura).
+        # Al guardarlas en intensidades_raw.npy, el Frontend calculará 
+        # el percentil 96% correctamente sobre la misma distribución que el backend.
         intensidades = canvas_raw[mask_validos]
         
         if len(intensidades) == 0:
