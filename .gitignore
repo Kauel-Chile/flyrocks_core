@@ -15,6 +15,7 @@ src/temp_videos/
 src/flyrocks.db
 temp_videos/
 flyrocks.db
+debug/
 
 # Los pesos del modelo de IA no se versionan: son binarios grandes que cambian
 # por su cuenta. Hay que ponerlos a mano donde el core los busque (ver V9.md).

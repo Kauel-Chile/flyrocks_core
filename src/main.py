@@ -289,7 +289,7 @@ async def start_analysis(
     
     return {"job_id": new_job.id, "mensaje": "Análisis encolado en segundo plano"}
 
-# --- ENDPOINT PARA REANUDAR TRAS LA SELECCIÓN DE PERCENTIL ---
+# --- ENDPOINT PARA REANUDAR (O REBOBINAR) TRAS LA SELECCIÓN DE PERCENTIL ---
 @app.post("/api/resume/{job_id}")
 async def resume_analysis(
     job_id: str,
@@ -301,9 +301,10 @@ async def resume_analysis(
         if not job:
             raise HTTPException(status_code=404, detail="Análisis no encontrado")
         
-        if job.status != "ESPERANDO_PERCENTIL_USUARIO":
-            raise HTTPException(status_code=400, detail=f"El job no está en estado de pausa. Estado actual: {job.status}")
-
+        # ELIMINAMOS LA RESTRICCIÓN RÍGIDA
+        # Ya no bloqueamos si el estado es distinto a "ESPERANDO_PERCENTIL_USUARIO".
+        # Si el job ya terminó (is_running=False), lo "resucitamos".
+        
         entrada = job.entrada or {}
         parametros = entrada.get("parametros", {})
         parametros["percentile"] = body.percentile
@@ -311,6 +312,12 @@ async def resume_analysis(
         
         job.entrada = entrada
         job.status = "Reanudando pipeline con nuevo percentil..."
+        job.is_running = True   # Resucita el job para el WebSocket
+        job.progress = 18       # Retrocede la barra de progreso
+        job.result_file_path = None
+        job.error_message = None
+        job.json_data = None    # Borramos los resultados viejos
+        
         session.add(job)
         session.commit()
 
@@ -330,8 +337,7 @@ async def resume_analysis(
             parametros.get("esp", 5.0)
         )
 
-    return {"job_id": job_id, "mensaje": f"Pipeline reanudado con percentil {body.percentile}%"}
-
+    return {"job_id": job_id, "mensaje": f"Pipeline reanudado/rebobinado con percentil {body.percentile}%"}
 # --- WEBSOCKET PARA NOTIFICAR EL AVANCE ---
 @app.websocket("/ws/progress/{job_id}")
 async def websocket_job_status(websocket: WebSocket, job_id: str):
