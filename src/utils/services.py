@@ -18,7 +18,8 @@ from utils.nodes.percentile_preview import PercentilePreviewNode
 
 from utils.nodes.trajectory_analysis import (
     EnergyPercentileFilterNode, DBSCANClusteringNode, 
-    GridSearchNode, KalmanTrackerNode, TrajectoryCleanerNode
+    GridSearchNode, KalmanTrackerNode, TrajectoryCleanerNode,
+    ParallelTrajectoryFusionNode 
 )
 
 from utils.nodes.velocity_analysis import (
@@ -72,7 +73,7 @@ def run_pipeline_task(
         grid_search = GridSearchNode(name="4_GridSearchOptimizer", cores=CORES)
         tracker = KalmanTrackerNode(name="5_KalmanTracker")
         cleaner = TrajectoryCleanerNode(name="6_TrajectoryCleaner")
-        
+        fusion_paralelas = ParallelTrajectoryFusionNode(name="6.5_ParallelFusion")
         if IA_ACTIVA:
             rock_filter = HighVelocityFilterNode(name="9_HighVelocityFilter", manual_threshold=0.0)
             pasos_velocidad = []
@@ -103,6 +104,7 @@ def run_pipeline_task(
             (grid_search, "Optimizando Grid Search", 45),
             (tracker, "Rastreando partículas (Kalman)", 55),
             (cleaner, "Limpiando trayectorias inválidas", 60),
+            (fusion_paralelas, "FUSIONANDO TRAYECTORIAS PARALELAS", 65),
             *pasos_velocidad,
             (rock_filter, "Formateando trayectorias trackeadas" if IA_ACTIVA else "Filtrando por velocidad", 70),
             (categorizer, "Categorizando trayectorias", 80),

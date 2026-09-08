@@ -286,3 +286,101 @@ class TrajectoryCleanerNode(PipelineNode):
         out_path.parent.mkdir(parents=True, exist_ok=True)
         np.save(out_path, tensor)
         logger.info(f"Saved final trajectories to: {out_path}")
+
+class ParallelTrajectoryFusionNode(PipelineNode):
+    """
+    Funde trayectorias paralelas generadas por el efecto dipolo.
+    Promedia las coordenadas donde se solapan y une los tramos complementarios.
+    """
+    def __init__(self, name: str = "ParallelFusion", max_distance_px: float = 12.0, min_overlap_ratio: float = 0.3):
+        super().__init__(name)
+        self.max_distance_px = max_distance_px
+        # Reducimos el ratio mínimo para permitir que trayectorias que solo se tocan "en la punta" se unan
+        self.min_overlap_ratio = min_overlap_ratio
+
+    def run(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        tensor = context.get("final_trajectories")
+        if tensor is None or len(tensor) == 0:
+            return context
+
+        # Extraer copias independientes para poder modificarlas sobre la marcha
+        ids_unicos = np.unique(tensor[:, 0])
+        trajs = {tid: tensor[tensor[:, 0] == tid].copy() for tid in ids_unicos}
+
+        ids_a_eliminar = set()
+        lista_ids = list(trajs.keys())
+
+        for i in range(len(lista_ids)):
+            id_a = lista_ids[i]
+            if id_a in ids_a_eliminar: 
+                continue
+
+            for j in range(i + 1, len(lista_ids)):
+                id_b = lista_ids[j]
+                if id_b in ids_a_eliminar: 
+                    continue
+
+                traj_a = trajs[id_a]
+                traj_b = trajs[id_b]
+
+                t_a = traj_a[:, 3]
+                t_b = traj_b[:, 3]
+
+                frames_comunes, ind_a, ind_b = np.intersect1d(t_a, t_b, return_indices=True)
+
+                if len(frames_comunes) == 0: 
+                    continue
+
+                ratio_a = len(frames_comunes) / len(t_a)
+                ratio_b = len(frames_comunes) / len(t_b)
+
+                # Verificar si el solapamiento justifica la prueba de fusión
+                if max(ratio_a, ratio_b) < self.min_overlap_ratio:
+                    continue
+
+                pts_a = traj_a[ind_a, 1:3]
+                pts_b = traj_b[ind_b, 1:3]
+                distancia_media = np.mean(np.linalg.norm(pts_a - pts_b, axis=1))
+
+                # === FUSIÓN COMPLEMENTARIA ===
+                if distancia_media < self.max_distance_px:
+                    merged_rows = []
+                    all_frames = np.union1d(t_a, t_b)
+                    
+                    for f in all_frames:
+                        row_a = traj_a[traj_a[:, 3] == f]
+                        row_b = traj_b[traj_b[:, 3] == f]
+                        
+                        if len(row_a) > 0 and len(row_b) > 0:
+                            # Promedio geométrico donde ambas existen
+                            new_row = (row_a[0] + row_b[0]) / 2.0
+                            new_row[0] = id_a  # Forzar el ID de la trayectoria principal
+                            new_row[3] = f     # Forzar el frame exacto
+                            merged_rows.append(new_row)
+                        elif len(row_a) > 0:
+                            # Tramos exclusivos de A
+                            merged_rows.append(row_a[0])
+                        else:
+                            # Tramos exclusivos de B (reasignando ID)
+                            new_row = row_b[0].copy()
+                            new_row[0] = id_a
+                            merged_rows.append(new_row)
+                            
+                    # Actualizar A con la versión expandida y marcar B para eliminación
+                    trajs[id_a] = np.vstack(merged_rows)
+                    ids_a_eliminar.add(id_b)
+                    
+                    # Refrescar traj_a para futuras comparaciones en el mismo loop
+                    traj_a = trajs[id_a] 
+                    t_a = traj_a[:, 3]
+
+        # Reconstruir el tensor final solo con las trayectorias que sobrevivieron
+        tensor_limpio = np.vstack([trajs[tid] for tid in lista_ids if tid not in ids_a_eliminar])
+        
+        # Ordenar por ID y luego cronológicamente para mantener el formato prístino
+        tensor_limpio = tensor_limpio[np.lexsort((tensor_limpio[:, 3], tensor_limpio[:, 0]))]
+        
+        context["final_trajectories"] = tensor_limpio
+        
+        logger.info(f"[{self.name}] Fusión completada: {len(ids_a_eliminar)} trayectorias complementarias absorbidas. Total final: {len(lista_ids) - len(ids_a_eliminar)}.")
+        return context
