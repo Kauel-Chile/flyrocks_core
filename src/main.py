@@ -8,19 +8,24 @@ import uuid
 from pathlib import Path
 import logging
 
+# Nadie configuraba el logging: el root queda en WARNING y los logger.info del
+# pipeline se descartan en silencio (el filtro de humo, el nodo mas caro, era el
+# unico del que no se veia una linea).
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
     datefmt="%H:%M:%S",
     stream=sys.stdout,
-    force=True,          
+    force=True,          # uvicorn ya instalo los suyos; este manda
 )
 
+# La consola de Windows en cp1252 no sabe escribir los emojis de los print de
+# progreso: el print revienta con UnicodeEncodeError y mata la corrida entera.
 for _flujo in (sys.stdout, sys.stderr):
     try:
         _flujo.reconfigure(encoding="utf-8", errors="replace")
     except (AttributeError, ValueError):
-        pass  
+        pass  # flujo redirigido o sin soporte: no vale la pena tumbar el arranque
 
 from fastapi import FastAPI, BackgroundTasks, WebSocket, WebSocketDisconnect, File, UploadFile, Form, HTTPException
 from pydantic import BaseModel
@@ -29,18 +34,52 @@ from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from datetime import datetime, timedelta
+
 from utils.database import engine, Job, migrar
 from utils.services import run_pipeline_task, TEMP_VIDEOS
 from utils import malla as malla_utils
 
 
+# Todo bajo DATA_DIR (el volumen), pero la URL publica sigue siendo /temp_videos
+# para no romper al frontend.
 os.makedirs(TEMP_VIDEOS, exist_ok=True)
+
+# Horas que se conservan los analisis. 0 = para siempre, que es el DEFECTO a
+# proposito: el core guarda el trabajo del cliente, y borrarle un analisis sin
+# que lo haya pedido es peor que quedarse sin disco. Se enciende poniendo un
+# numero en el compose, igual que el blast detector (que si tiene 24 h porque lo
+# suyo son videos crudos, no resultados).
+RETENCION_HORAS = float(os.getenv("RETENCION_HORAS", "0") or 0)
+
+
+def purgar_analisis_viejos():
+    """Borra los analisis mas viejos que RETENCION_HORAS, con sus archivos."""
+    if RETENCION_HORAS <= 0:
+        return
+    corte = datetime.utcnow() - timedelta(hours=RETENCION_HORAS)
+    with Session(engine) as session:
+        viejos = [j for j in session.query(Job).all()
+                  if j.creado_en and j.creado_en < corte and not j.is_running]
+        for j in viejos:
+            carpeta = ((j.entrada or {}).get("artefactos") or {}).get("carpeta")
+            if carpeta:
+                destino = (Path(TEMP_VIDEOS) / carpeta).resolve()
+                if destino.parent == Path(TEMP_VIDEOS).resolve() and destino.is_dir():
+                    shutil.rmtree(destino, ignore_errors=True)
+            session.delete(j)
+        if viejos:
+            session.commit()
+            print(f"[retencion] {len(viejos)} analisis de mas de "
+                  f"{RETENCION_HORAS} h eliminados")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("Inicializando recursos de la aplicación...")
     SQLModel.metadata.create_all(engine)
     migrar()   # columnas nuevas sobre una base que ya existe
+    purgar_analisis_viejos()
     yield 
     print("Apagando la aplicación y liberando recursos...")
     engine.dispose()
@@ -48,6 +87,8 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="API de Análisis Flyrocks", lifespan=lifespan)
 
 class _EstaticoSinCache(StaticFiles):
+    """Pide revalidar siempre: sin esta cabecera el navegador puede mostrar el
+    artefacto cacheado de otro analisis, que es como se veia el bug."""
 
     def file_response(self, *args, **kwargs):
         resp = super().file_response(*args, **kwargs)
@@ -65,11 +106,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# El pipeline se PAUSA aca (fase 1 terminada) y espera que el usuario elija el
+# percentil en el paso 4. El job queda con is_running=True a proposito: es lo
+# que mantiene vivo el WebSocket de progreso mientras el usuario decide.
+ESPERANDO_PERCENTIL = "ESPERANDO_PERCENTIL_USUARIO"
+
 class ResumeRequest(BaseModel):
     percentile: float
 
 def _guardar_artefactos(carpeta: Path, job_id: str, nombre_video: str, ancla):
-
+    """Extrae el frame de referencia y devuelve las rutas RELATIVAS a
+    /temp_videos, que es como la vista arma sus URLs."""
     import cv2
 
     ruta_video = carpeta / nombre_video
@@ -112,6 +159,14 @@ _CODECS_WEB = ("avc1", "h264")
 
 
 def _derivar_video_web(carpeta: Path, nombre_video: str):
+    """Deja un derivado H.264 del clip para que el fondo de video se vea.
+
+    El recorte llega de OpenCV con fourcc mp4v (MPEG-4 parte 2): ningun navegador
+    lo decodifica y el <video> queda en negro con MEDIA_ERR_SRC_NOT_SUPPORTED.
+    Es un DERIVADO y no una conversion del original porque reescribir el clip
+    invalidaria la cache de todos los nodos del pipeline. Corre en un hilo
+    aparte: son ~26 s sobre un 4K y el POST tiene que responder al toque.
+    """
     import shutil as _sh
     import subprocess
     import threading
@@ -182,7 +237,8 @@ def _derivar_video_web(carpeta: Path, nombre_video: str):
 
 
 def _fps_de(video_path: str):
-
+    """FPS del video, o None. Hace falta para pasar el tiempo de detonacion (ms
+    en el CSV) a frame, que es la unidad de las trayectorias."""
     try:
         import cv2
         cap = cv2.VideoCapture(video_path)
@@ -205,7 +261,11 @@ async def start_analysis(
     percentile: float = Form(..., ge=0.0, le=100.0),
     sigma: float = Form(..., ge=0.0, le=1.0),
     esp: float = Form(..., ge=1.0, le=7.0),
+    # CSV de secuencia (Label, X, Y, Z, DetonatingTime). OPCIONAL: sin el, el
+    # analisis corre igual pero el job queda sin malla y sin asociacion al tiro.
     detonation_sequence: UploadFile = File(None),
+    # El ancla temporal, en frames del video ORIGINAL. Ya existia aguas arriba
+    # (paso 2 del wizard) y hasta ahora se tiraba.
     frame_detonacion: int = Form(None),   # lo que detectó el blast detector
     frame_inicio_corte: int = Form(None), # dónde cortó el usuario
 ):
@@ -217,18 +277,24 @@ async def start_analysis(
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Los parámetros de zonas o matriz deben ser JSON válidos.")
 
-    
+    # 2. UNA CARPETA POR ANALISIS. Antes todo iba junto con nombres fijos: la
+    # mascara de cambios era UNA sola para toda la app y cada analisis pisaba la
+    # del anterior — abrir un job viejo mostraba la mascara de otro, sin error.
     job_id = str(uuid.uuid4())
     carpeta = Path(TEMP_VIDEOS) / job_id
     carpeta.mkdir(parents=True, exist_ok=True)
     nombre_video = Path(video.filename or "video").name or "video"
 
+    # El wizard sube el recorte como `video`, SIN extension, y el estatico
+    # adivina el tipo por ella: sin extension lo sirve como text/plain.
     if not Path(nombre_video).suffix:
         nombre_video += ".mp4"
     video_path = str(carpeta / nombre_video)
     with open(video_path, "wb") as buffer:
         shutil.copyfileobj(video.file, buffer)
 
+    # 3. Se guarda CON QUE se corrio: sin homografia ni zonas, ninguna vista
+    # puede dibujar la malla ni asociar al tiro.
     entrada = {
         "video": video.filename,
         "h_matrix": h_matrix_parsed,
@@ -238,6 +304,8 @@ async def start_analysis(
     }
 
 
+    # Se guardan LOS TRES: el ancla es lo que usa la vista, los crudos permiten
+    # recalcularla si manana cambia el criterio.
     if frame_detonacion is not None and frame_inicio_corte is not None:
         entrada["recorte"] = {
             "frame_detonacion": frame_detonacion,
@@ -317,6 +385,11 @@ async def resume_analysis(
         job.result_file_path = None
         job.error_message = None
         job.json_data = None    # Borramos los resultados viejos
+        # Y con ellos la edicion manual: los track_id se reasignan desde cero al
+        # recalcular, asi que el avance de la pasada anterior apunta a rocas que
+        # ya no son esas. Rebobinar es volver atras en el wizard, y lo de adelante
+        # se pierde. El archivo que el usuario descargo sigue siendo su respaldo.
+        job.avance = None
         
         session.add(job)
         session.commit()
@@ -400,8 +473,14 @@ def list_jobs(limite: int = 50):
     with Session(engine) as session:
         filas = session.execute(text("""
             SELECT id, creado_en, status, is_running,
-                   json_extract(entrada, '$.video')             AS video,
+                   json_extract(entrada, '$.video')              AS video,
                    json_extract(entrada, '$.artefactos.carpeta') AS carpeta,
+                   json_extract(entrada, '$.h_matrix')           AS h_matrix,
+                   -- El resumen del avance viaja en el propio JSON, y se lee
+                   -- con json_extract para NO traer el avance entero: son
+                   -- megas por job y esta lista se pide solo para elegir.
+                   json_extract(avance, '$._meta.guardado_en')   AS avance_en,
+                   json_extract(avance, '$._meta.aprobadas')     AS avance_aprobadas,
                    CASE WHEN json_data IS NULL THEN 0
                         ELSE (SELECT count(*) FROM json_each(job.json_data)) END AS trayectorias
             FROM job
@@ -409,7 +488,148 @@ def list_jobs(limite: int = 50):
             LIMIT :limite
         """), {"limite": limite}).mappings().all()
 
-    return [dict(f) for f in filas]
+    salida = []
+    for f in filas:
+        d = dict(f)
+        # ABRIBLE: si la vista va a poder reconstruir el analisis o no.
+        #
+        # Sin esto, un job de una version anterior aparecia en la lista igual que
+        # los demas y reventaba al abrirlo — o peor: sin `artefactos` caia al
+        # nombre global `mascara_cambios.png` y mostraba LA MASCARA DE OTRO
+        # ANALISIS, sin un solo error, solo una imagen que no corresponde. Es
+        # mejor no ofrecerlo y decir por que.
+        carpeta = d.pop("carpeta", None)
+        falta = []
+        if not d.pop("h_matrix", None): falta.append("la calibración")
+        if not carpeta:                 falta.append("sus imágenes")
+
+        # DONDE RETOMAR. Un analisis no siempre quedo terminado: desde que el
+        # pipeline se parte en dos, puede estar esperando que el usuario elija
+        # el percentil. Esos NO se pueden esconder de la lista —es la unica
+        # puerta de vuelta, y el trabajo caro ya se hizo— pero tampoco abrirse
+        # en la vista final, porque todavia no hay trayectorias.
+        pausado = d["status"] == ESPERANDO_PERCENTIL
+        # Un analisis que reventó tampoco lleva a ninguna parte: no tiene
+        # trayectorias, asi que abrirlo seria una vista vacia. Se muestra igual
+        # —ocupa disco y hay que poder borrarlo— pero no se ofrece.
+        fallado = str(d["status"] or "").startswith("Error")
+        if fallado:
+            d["retomar_en"] = None
+        elif pausado:
+            d["retomar_en"] = "percentil"
+        elif d["is_running"]:
+            d["retomar_en"] = None          # corriendo: no hay nada que abrir
+        else:
+            d["retomar_en"] = "edicion"
+
+        d["abrible"] = not falta and not pausado and not fallado and not d["is_running"]
+        if fallado:
+            d["motivo"] = "Terminó con error"
+        elif falta:
+            d["motivo"] = ("Análisis de una versión anterior: no guardó "
+                           + " ni ".join(falta))
+        elif pausado:
+            d["motivo"] = "Quedó esperando que elijas el corte de ruido"
+        elif d["is_running"]:
+            d["motivo"] = "Procesando…"
+        else:
+            d["motivo"] = None
+
+        # Lo que ocupa en disco, para que se vea que esta llenando el equipo.
+        d["bytes"] = _peso_carpeta(Path(TEMP_VIDEOS) / carpeta) if carpeta else 0
+        salida.append(d)
+    return salida
+
+
+def _peso_carpeta(ruta: Path) -> int:
+    """Bytes que ocupa una carpeta. Silenciosa: que no se pueda medir el disco
+    no es motivo para que la lista de analisis deje de responder."""
+    try:
+        return sum(f.stat().st_size for f in ruta.rglob("*") if f.is_file())
+    except Exception:
+        return 0
+
+
+@app.put("/api/jobs/{job_id}/avance")
+async def guardar_avance(job_id: str, avance: dict):
+    """Guarda el trabajo manual sobre un analisis, sobrescribiendo el anterior.
+
+    Es lo que permite retomar sin archivos: el usuario aprieta «Guardar avance»
+    y el analisis queda listo para reabrirse tal cual, desde cualquier
+    navegador. El archivo que ademas se descarga sigue existiendo, pero pasa a
+    ser lo que siempre debio ser —un respaldo, y la forma de tener guardadas
+    VARIAS alternativas del mismo analisis— en vez del unico camino de vuelta.
+    """
+    with Session(engine) as session:
+        job = session.get(Job, job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Análisis no encontrado")
+
+        proys = avance.get("proyecciones") or []
+        # El resumen se calcula ACA y se guarda dentro del propio avance, para
+        # que la lista pueda mostrar "169 aprobadas" sin cargar megas de puntos.
+        avance["_meta"] = {
+            "guardado_en": datetime.utcnow().isoformat(timespec="seconds"),
+            # Aprobada Y no descartada, la misma definicion que el contador de
+            # la vista: una aprobada que despues se descarto a mano conserva su
+            # marca —descartar es reversible— pero ya no es parte de la cosecha.
+            # Contandolas todas, el chip de la pantalla de entrada decia "169
+            # aprobadas" para un avance donde quedaban 160.
+            "aprobadas": sum(1 for t in proys
+                             if t.get("aprobada") and t.get("estado") != "descartada"),
+            "trayectorias": len(proys),
+        }
+        job.avance = avance
+        session.add(job)
+        session.commit()
+        return {"ok": True, **avance["_meta"]}
+
+
+@app.get("/api/jobs/{job_id}/avance")
+def leer_avance(job_id: str):
+    with Session(engine) as session:
+        job = session.get(Job, job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Análisis no encontrado")
+        if not job.avance:
+            raise HTTPException(status_code=404, detail="Este análisis no tiene avance guardado")
+        return job.avance
+
+
+@app.delete("/api/jobs/{job_id}")
+def borrar_job(job_id: str):
+    """Borra un analisis y sus archivos.
+
+    Hasta ahora la unica forma de liberar espacio era la opcion «CERRAR Y BORRAR
+    TODO» del .bat, que se lleva TAMBIEN los analisis que uno queria conservar.
+    Poder borrar de a uno es la diferencia entre administrar el disco y perderlo
+    todo para recuperar unos megas.
+    """
+    with Session(engine) as session:
+        job = session.get(Job, job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Análisis no encontrado")
+        # is_running NO alcanza para saber si hay algo computando: un job pausado
+        # esperando el percentil la tiene en True (para el WebSocket) y sin embargo
+        # su hilo ya termino. Si eso contara como "corriendo", ese analisis seria
+        # imborrable para siempre.
+        if job.is_running and job.status != ESPERANDO_PERCENTIL:
+            raise HTTPException(status_code=409, detail="El análisis todavía está corriendo")
+        carpeta = ((job.entrada or {}).get("artefactos") or {}).get("carpeta")
+        session.delete(job)
+        session.commit()
+
+    liberado = 0
+    if carpeta:
+        # El id va en la ruta, asi que se comprueba que la carpeta a borrar sea
+        # EXACTAMENTE la del job y no algo que se le parezca: un rmtree guiado
+        # por un parametro de la URL merece esa paranoia.
+        destino = (Path(TEMP_VIDEOS) / carpeta).resolve()
+        base = Path(TEMP_VIDEOS).resolve()
+        if destino.parent == base and destino.name == carpeta and destino.is_dir():
+            liberado = _peso_carpeta(destino)
+            shutil.rmtree(destino, ignore_errors=True)
+    return {"ok": True, "bytes_liberados": liberado}
 
 
 @app.get("/api/results/{job_id}")

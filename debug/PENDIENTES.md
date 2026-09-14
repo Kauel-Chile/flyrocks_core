@@ -2,7 +2,7 @@
 
 > **Índice de temas abiertos.** Este documento es el *menú*: una línea por tema
 > para poder elegir cuál retomar. El detalle vive en los docs enlazados.
-> Última revisión: 2026-08-09.
+> Última revisión: 2026-09-14.
 >
 > Convención: cada tema tiene **estado**, **por qué importa** y **dónde está el
 > detalle**. Al cerrar uno, moverlo a "Cerrados" con la fecha.
@@ -10,6 +10,434 @@
 ---
 
 ## Activos (lo que está en la mesa ahora)
+
+### P21 — La tronadura en el tiempo: animar y exportar el vuelo ⬅ **pedido 2026-09-04, planificado, sin empezar**
+**Estado:** decisiones tomadas con el usuario, nada codificado. *«Esto le encanta
+al cliente.»*
+
+Reproducir la tronadura: las trayectorias **finales —las que quedaron después de
+limpiar—** dibujándose en el tiempo sobre el canvas, con un botón de play, y
+después poder exportarlo como video.
+
+**Los datos ya están, medidos sobre `casos/ia-v9`:**
+- El **100%** de las trayectorias trae `frames` punto por punto. No hay que
+  interpolar nada.
+- El vuelo completo son **453 frames = 15,1 s** a 29,97 fps.
+- La secuencia de tiros dura **2,8 s** (113 pozos, de 3.000 a 5.769 ms).
+- El ritmo se ve bien solo: nacen 83 rocas en el segundo 1, **469 en el 4** (el
+  pico), y decae a 139 en el 12.
+- La vista **ya tiene** reproductor de clip, transporte, línea de tiempo,
+  selector de velocidad y `irAFrame()`. Falta que los TRAZOS respondan al frame:
+  hoy `dibujarTrazos()` pinta la polilínea entera siempre.
+- **ffmpeg ya viaja en la imagen del core** (`Dockerfile`), así que un MP4 H.264
+  de verdad es posible — no un WebM que después no abre en PowerPoint.
+
+**Decisiones del usuario (2026-09-04):**
+- **Sin punta destacada.** El trazo se dibuja avanzando en su color de siempre.
+  Una punta brillante *«opacaría la roca real si es que es visible atrás»*: el
+  fondo puede ser el clip, y ahí la roca de verdad se está viendo.
+- **La detonación del pozo sí se anima** — un brillo cuando revienta.
+- **Play en el mismo canvas**, y exportar después. No una pantalla aparte.
+- **El video se arma con lo VISIBLE**: las aprobadas más lo que quede en
+  pantalla. Misma regla que el resto de la herramienta —*me llevo lo que veo*—.
+- **El fondo sigue siendo elegible**, tal como está hoy.
+- **Las rocas salen de su pozo**, con el mismo tratamiento que ya usa el canvas:
+  **punteado el tramo reconstruido, sólido desde donde se vio de verdad**.
+
+**El calce temporal — esto es lo que hay que resolver bien:**
+
+Una roca tiene DOS tiempos y hoy solo se usa uno.
+
+1. `frame_deton` = `ancla + (t_pozo − t_min) × fps / 1000` — cuándo revienta su
+   tiro. Sale del CSV de secuencia, que da tiempos **relativos**; el `ancla` es
+   el origen (frame del clip donde detona el primero) y hoy ya se guarda por job
+   y se afina con el slider `fAncla`.
+2. `frame_nace` = `T.t_ini` — cuándo la **cámara** la vio por primera vez. No es
+   cuándo salió: el destello y el humo tapan el arranque, con una **mediana de
+   50 frames (1,7 s) de retardo** ya medida.
+
+La animación tiene que usar los dos: **entre `frame_deton` y `frame_nace` se
+dibuja el empalme punteado avanzando** (el tramo reconstruido, que es
+exactamente lo que ese punteado significa hoy en el canvas), y **desde
+`frame_nace` el trazo real, sólido**. Así la roca sale cuando revienta su tiro y
+"aparece" cuando la cámara la agarra, que es la verdad de la medición.
+
+Casos a resolver antes de codificar:
+- **Trazas que nacen antes que su pozo.** 24 de 3.742 (1%) nacen antes del frame
+  del ancla (la primera está en el 14, el primer tiro en el 48). Si
+  `frame_nace < frame_deton` no hay tramo que animar hacia adelante. ¿Se dibujan
+  sin empalme, se ocultan hasta el ancla, o se corrige el ancla? **Se ve en
+  pantalla si no se decide**: rocas volando antes de que reviente nada.
+- **Trazas sin pozo asociado**: no tienen `frame_deton`. Se dibujan desde su
+  nacimiento y sin empalme, que es lo que ya hacen hoy en el canvas.
+- **Con la asociación apagada** (`A.activo = false`) no hay pozos: la animación
+  degrada a "cada traza desde que nace", sin empalmes ni brillo de detonación.
+- **El ancla se puede validar con la propia animación**: si las rocas salen
+  antes o después del fogonazo del clip, el slider está corrido. Es la primera
+  vez que ese parámetro tiene una comprobación visual directa.
+
+**El calce de VELOCIDADES es el que valida todo (idea del usuario, 2026-09-04):**
+
+*«Entre que detona el tiro y se hace la proyección hacia donde empieza lo
+visible, con su tiempo, las velocidades deberían calzar. Y eso es fácil de ver a
+ojo humano: se verán desincronizaciones en caso de haber error.»*
+
+Es el punto más importante del diseño. El tramo punteado NO puede dibujarse a
+una velocidad arbitraria —repartir el empalme uniformemente entre `frame_deton`
+y `frame_nace` sería exactamente eso—: tiene que ir a la velocidad que la roca
+traía. Si el punteado avanza lento y de golpe la traza real sale disparada
+(o al revés), eso **es** el error, y se ve sin medir nada. Las fuentes posibles:
+el `ancla` corrido, una asociación al pozo equivocada, o la escala px/m.
+
+Y lo que se ve a ojo también se puede **calcular**: con la velocidad inicial `v`
+de la traza visible y el largo `L` del empalme, el tiempo implícito de ese tramo
+es `L / v` frames. Comparado con `frame_nace − frame_deton` da un residuo por
+trayectoria. Sobre todas ellas eso permite (a) **ajustar el `ancla`
+automáticamente** minimizando el residuo mediano, en vez de moverlo a ojo, y
+(b) marcar las asociaciones cuyo tiempo implícito no calza con su pozo. Vale por
+sí solo, aunque el video nunca se exporte.
+
+**Dos números medidos que hay que mirar ANTES de codificar esto** (caso `ia-v9`,
+escala 8,55 px/m):
+
+1. **La velocidad inicial está inflada por el ruido.** Medida sobre los primeros
+   4 puntos da una mediana de **16,1 m/s**; medida como cuerda/duración de la
+   traza completa, **8,4 m/s**. Un factor **1,9×**. Es el mismo zigzag del
+   centroide que quita el alisado, y en tramos cortos infla el desplazamiento.
+   Si el punteado se dibuja con la velocidad de los primeros puntos, va a ir
+   casi al doble de rápido de lo que corresponde. **Conviene medir la velocidad
+   sobre la traza alisada, o sobre un tramo largo, no sobre los primeros
+   puntos.**
+2. **El tramo reconstruido puede ser más largo que el medido.** A la velocidad
+   mediana, en el retardo típico de 50 frames la roca recorre **14 m** (43,9 m
+   las rápidas), mientras que **el largo mediano del trazo visible es de 5 m**
+   (p90: 36 m). O sea: en la mitad de los casos, la mayor parte de lo que se
+   verá moverse en el video es **punteado reconstruido, no medición**. Eso no
+   invalida la animación —el punteado ya significa "esto no se vio"— pero si va
+   a una reunión con el cliente hay que decirlo, y quizá **animar el empalme
+   solo para las trayectorias largas**, donde el tramo medido domina.
+
+**Fases:**
+1. **Trazos en el tiempo** — el bucle de `dibujarTrazos()` respeta el frame
+   actual, con la estela acumulada (la mediana de una traza son **21 frames =
+   0,7 s**: sin acumular, el video queda vacío y parpadeante, y además el último
+   cuadro deja de ser la imagen final que el cliente ya conoce). Botón de play
+   en el canvas. Es el 80% del valor: ya se puede mostrar en pantalla.
+2. **Pozos detonando** en secuencia con su brillo, sobre esos mismos 2,8 s, y
+   los empalmes punteados saliendo de cada uno **a la velocidad medida de cada
+   roca**, no a una velocidad de relleno. Acá es donde se ve si el `ancla` está
+   bien: es la primera comprobación visual directa que tiene ese parámetro.
+3. **Exportar**. Dos caminos, no excluyentes: `MediaRecorder` sobre el canvas
+   (WebM, casi gratis una vez hecha la fase 1) o **el core con ffmpeg** (MP4
+   H.264 a 4K, que es lo que sirve de entregable y puede reusar el clip del job
+   y el avance guardado, o sea sale de lo aprobado y no del crudo).
+
+### P23 — El histograma medía otra cosa ✅ **hecho 2026-09-14**
+**Reportado por un usuario:** editó un caso, quedó con ~300 de 5.000
+trayectorias, y el histograma las puso **todas en la primera barra**, como si
+ninguna hubiera llegado a 5 m — habiendo trayectorias largas y cortas.
+
+**Qué pasaba.** El botón decía «Histograma de alcances» pero el gráfico no
+medía alcance: graficaba `escape_relativo × diametro_equivalente`, o sea cuánto
+se salió la roca del **borde del polígono de voladura**. Esa medida vale 0 para
+toda roca que no cruzó el borde, y depende de un diámetro que la vista
+**inventaba** cuando la zona de origen no llegaba en el job: había un
+`Math.max(areaM2, 1)` que lo clavaba en **1.13 m**, y con eso la voladura entera
+medía menos de 4 m y el caso completo caía en la primera barra. Sin un error,
+sin un aviso. Verificado sobre `casos/3160-789`: sano reparte 726 trayectorias
+en 21 barras hasta 206 m; con la zona ausente, 726/726 en la primera y un máximo
+de 3.86 m.
+
+**Qué se hizo:**
+- El histograma grafica el **alcance desde el tiro de origen** — recta del pozo
+  al último punto del trazo, la misma cifra que el entregable llama
+  `distancia_m` y resume en `alcance_max_m`. El gráfico y el JSON por fin dicen
+  lo mismo. La salida del área sigue en el archivo como `salida_area_m`.
+- La fórmula del alcance vive en **una** función (`alcanceDesde`); estaba
+  copiada en el panel y en el entregable.
+- El diámetro ya no se inventa: sin zona de origen queda `null`, `salida_area_m`
+  sale `null` en vez de un cero que se lee como «no salió del área», y queda un
+  `console.warn` diciendo qué falta.
+- Si hay trayectorias sin tiro de origen, **se avisa antes de exportar**: para
+  ésas el gráfico cae a la cuerda del trazo, que mide solo lo que la cámara
+  alcanzó a ver (mediana de 5 m) y vuelve a amontonar la primera barra.
+- La línea del radio de evacuación ya no revienta la exportación cuando el caso
+  no trae radio.
+
+### P24 — Cuáles quedaron sin empalme al origen ✅ **hecho 2026-09-14**
+Pedido junto con P23: *«poder decir cuántas están empalmadas y cuántas no, y/o
+cuáles, para corregirlas.»*
+
+- Cada trayectoria guarda **por qué** quedó sin origen (`sin_empalme`): pocos
+  puntos, sin tangente, ningún pozo detrás del inicio, o el calce temporal los
+  descartó. Antes el panel las contaba juntas y les atribuía a todas el mismo
+  motivo —el número era correcto y la explicación no—.
+- El panel de asociación las desglosa por motivo y trae un botón **«Ver solo las
+  sin empalme»**, que es una lupa nueva junto a lienzo/aprobadas.
+- El entregable lleva `resumen.sin_empalme` y `sin_empalme_por_motivo`.
+- De paso: el archivo asociaba trayectorias que la pantalla se negaba a asociar
+  (bajo `nMin` puntos la tangente no es confiable), así que el panel decía 176
+  sin empalme y el JSON 75 del mismo caso. Ahora los dos usan la misma regla.
+
+### P25 — El sentido del trazo dibujado y el escape de lo editado ✅ **hecho 2026-09-14**
+Salió de revisar el punto que quedaba abierto de P23: las dibujadas a mano
+nacían con `escape_relativo: 0` fijo.
+
+**Dar vuelta el sentido.** El sentido de un trazo importa: la asociación al pozo
+sale de la tangente **inicial** proyectada hacia atrás, así que una trayectoria
+dibujada al revés busca su origen en la dirección contraria y se queda sin
+pozo. Medido sobre `casos/3160-789`: la misma curva se asocia al tiro 109 en el
+sentido del vuelo y sale «sin pozo detrás» invertida. No había forma de
+arreglarlo salvo borrarla y volver a dibujarla.
+
+- Botón **«Dar vuelta el sentido»** en el panel y tecla `V`, con deshacer.
+- Solo para trazos **sin eje temporal** (los dibujados). Dar vuelta uno con
+  `frames` dejaría la lista en orden descendente, y de ahí salen `t_ini`, el
+  calce temporal y el orden de las uniones. Los del detector vienen bien por
+  construcción: el tracker sigue al video.
+- `invertir()` ya existía pero solo daba vuelta `puntos`, y en una dibujada la
+  **Bézier manda** (`tangenteInicial` la lee a ella): invertía la lista sin
+  cambiar nada de lo que se ve ni de lo que se asocia. Ahora da vuelta también
+  los puntos de control y los índices del empalme.
+
+**El escape relativo se recalcula.** `escapeRelativoDe()` hace en la vista lo
+mismo que el nodo `OriginAreaExpansion` del pipeline: distancia máxima a la que
+un punto se sale del hull del polígono de origen, dividida por el diámetro
+equivalente, todo en píxeles. Validado contra los valores que el pipeline dejó
+guardados: **691 de 726 idénticas y las 35 restantes difieren en 0.01**, que es
+el redondeo a dos decimales del nodo. Se aplica al dibujar y al mover un tirador
+(`rasterizar`), al recortar y al unir —donde además el escape incluye ahora el
+tramo reconstruido—. Antes una dibujada salía en el entregable con
+`salida_area_m: 0`, que se lee como «esta roca no salió del área».
+
+**Una cuarta de la misma familia:** `distanciaDesdePozo` (el renglón «desde el
+tiro X» del panel) era el único que no aplicaba la regla de `nMin`, así que
+mostraba una distancia justo encima de su propio aviso «Sin asociar: 3 puntos»
+— 101 trayectorias del caso de prueba. Ya usa la misma regla que el resto.
+
+**Nota que quedó verificada de paso:** las trayectorias manuales **sí** se
+asocian a un pozo, y **sin** el filtro temporal — no porque haya una regla
+especial, sino porque no tienen `t_ini` y la condición `T.t_ini != null` apaga
+sola el calce causal. Era exactamente lo que había que hacer; está bien como
+está.
+
+### P26 — La pantalla de entrada estaba pintada para fondo claro ✅ **hecho 2026-09-14**
+**Reportado:** el texto del pie se ve negro sobre el azul de la página.
+
+`Inicio.page.tsx` usaba los colores del tema **claro** de MUI —`text.secondary`,
+`text.disabled`, bordes `#d8d8d8`, hover `#faf6f4`— sobre el `#001223` que
+`index.css` le pone a toda la app. Y el proyecto **no tiene `ThemeProvider`**,
+así que MUI cae a su tema claro por defecto: hay que decirle el color a cada
+superficie, componente por componente. Medido:
+
+| | antes | ahora |
+|---|---|---|
+| subtítulo y pie | **1.07 : 1** | 7.6 : 1 |
+| nota del final | **1.05 : 1** | 5.6 : 1 |
+| motivo de un análisis no abrible | 4.5 : 1 (ámbar de fondo claro) | 9.6 : 1 |
+| chip «N aprobadas» | 3.1 : 1 | 9.3 : 1 |
+
+Los colores salen del resto del front, no de un gusto nuevo: `#234567` es la
+línea que usan Step3, Step4, Step5 y MatrixGuide; el naranja es el de los
+sliders del wizard; `#5fafff`, `#ffb726` y `#d80000` son los estados de Step1; y
+el cian del chip es el mismo `#22d3ee` con que la vista pinta lo aprobado. El
+panel (`#0a1f33`) es el fondo de la app levantado hacia esa línea, para que las
+tarjetas se despeguen sin meter un gris ajeno.
+
+De paso: dos reglas horizontales como las que separan secciones en los pasos del
+wizard, y el naranja de los textos aclarado a `#ff7a45` — `#f94600` sobre el
+azul queda en 4.3:1, justo en el límite.
+
+Verificado con `tsc -b --force`, `vite build` y un render fuera del navegador
+(`react-dom/server`) que confirma que los colores que llegan al HTML son los
+nuevos.
+
+### P27 — Un lazo se llevaba lo aprobado ✅ **hecho 2026-09-14**
+**Reportado:** una trayectoria aprobada se puede eliminar con el lazo o con el
+recorte, y si se elimina el contador de aprobadas no se mueve.
+
+Las dos cosas eran ciertas, y la segunda escondía a la primera. Medido sobre
+`casos/3160-789` con 20 aprobadas y un lazo que cubre toda la pantalla:
+
+| | antes | ahora |
+|---|---|---|
+| aprobadas que sobreviven al lazo | **0 de 20** | 20 de 20 |
+| contador tras el lazo | 0 | 20 |
+| entregable tras el lazo | `activas: 0, aprobadas: 20` | `activas: 20, aprobadas: 20` |
+
+**Lo aprobado no se lo lleva una herramienta de masa.** Era la misma garantía
+que los filtros ya daban —«una aprobada no puede escaparse de la pantalla por
+mover un slider»— y que a `atrapadas()` y a `aplicarRecorte()` les faltaba.
+Aprobar significa que una persona miró esa trayectoria entera y se la lleva; un
+lazo no puede deshacer eso de refilón. En el recorte pesa todavía más: descarta
+la original y crea otra con id nuevo (`Xr`), o sea que no le quita la aprobación
+— la reemplaza por una trayectoria distinta, que ya no es la que se revisó.
+
+- Restaurando **sí** se tocan: devolver a la vida una aprobada descartada no le
+  quita nada a nadie.
+- Para sacar una aprobada hay que seleccionarla y descartarla a mano, que es
+  explícito y reversible. Eso sigue funcionando.
+- El lazo y el recorte **lo dicen** cuando respetaron alguna: callarlo cuando el
+  lazo agarra tres y deja dos se lee como que la herramienta falla.
+
+**El contador.** `aprobadas` contaba `T.aprobada` sin mirar el estado, así que
+una aprobada descartada seguía sumando y el número no bajaba nunca. El caso
+extremo lo dejaba absurdo: un entregable con `activas: 0` y `aprobadas: 20`. Una
+sola definición ahora, `esAprobada = aprobada && estado !== "descartada"`, usada
+por el contador, la cosecha y el resumen del entregable. La marca **se
+conserva** en la descartada —descartar es reversible y al restaurarla vuelve
+aprobada sin tener que volver a mirarla—, solo deja de contar como cosecha.
+
+El core tenía el mismo error al resumir el avance guardado
+(`main.py`, `PUT /api/jobs/{id}/avance`), así que el chip «N aprobadas» de la
+pantalla de entrada arrastraba la misma cifra inflada. Corregido con la misma
+definición.
+
+### P28 — El interruptor entre las dos vistas iba en un solo sentido ✅ **hecho 2026-09-14**
+**Reportado:** desde la vista del compañero no hay botón para volver a la nuestra.
+
+`Step4Bifurcacion.tsx` dibujaba la barra con el botón **solo en la rama de la
+vista nueva**. Al pasarse a la anterior devolvía `<Step5 />` pelado: sin barra,
+sin botón, y el único camino de vuelta era recargar la página — que además se
+llevaba la limpieza no guardada.
+
+Buscando eso aparecieron dos más en el mismo botón:
+
+1. **Cambiar de vista mataba el iframe.** El componente devolvía otra cosa, así
+   que React desmontaba la vista de limpieza entera y con ella todo lo trabajado
+   desde el último «Guardar avance». Ahora **las dos quedan montadas** y solo se
+   alterna cuál se ve; la anterior se monta la primera vez que se pide y desde
+   ahí se queda (montarla de entrada cuesta un canvas y un OpenCV que casi nadie
+   usa, y desmontarla al volver le borraría sus ediciones).
+2. **Peor: te expulsaba del asistente.** `Step5` arranca con
+   `if (!step1Data) navigate("/wizard/step-1")`. Quien abrió el análisis desde la
+   pantalla de entrada no tiene esos datos, así que el botón lo mandaba al paso 1
+   y perdía el trabajo. Ahora el cambio se ofrece deshabilitado y con el motivo,
+   en vez de llevarlo a un callejón.
+
+Además: la barra dice **en cuál de las dos estás** (de lejos se parecen), y al
+entrar a la anterior se avisa que **no guarda nada** — lo que se edite ahí no
+queda ni en el análisis ni en un archivo.
+
+De paso, la paleta de las pantallas nuestras se movió a `src/ui/paleta.ts`: la
+barra y la pantalla de entrada tienen que verse iguales, y con los colores
+escritos a mano en cada archivo ya habían empezado a separarse.
+
+### P30 — El filtro por clase y la clase de lo editado ✅ **hecho 2026-09-14**
+**Reportado:** ocultar por clase funciona en un video nuevo, pero al cargar un
+trabajo anterior «como que no funciona». Y: al editar una trayectoria habría que
+recalcular a qué clase pertenece.
+
+**Las dos cosas eran ciertas y tenían la misma raíz:** la clase se trataba como
+si fuera un dato fijo del pipeline.
+
+**1 · El filtro por clase estaba entre los umbrales de calidad.** `recalcular()`
+exenta de los filtros lo aprobado y lo tocado a mano —bien: son juicios sobre la
+calidad de una detección automática, y una persona ya decidió— pero la casilla
+de clase estaba dentro de esa exención. Al abrir un trabajo guardado, **todo lo
+aprobado ignoraba el filtro**, que es justo lo que uno tiene cargado. Medido
+sobre `casos/3160-789` con 200 aprobadas:
+
+| apagar «Proyección» | antes | ahora |
+|---|---|---|
+| desde cero | 0 de esa clase visibles | 0 |
+| sobre trabajo cargado | **141 visibles, las 141 aprobadas** | 0 |
+
+El filtro por clase **no es un juicio de calidad**: no dice «esta traza es mala»,
+dice «enséñame solo las peligrosas». Es un control de vista, y ahora se aplica a
+todo. Esconder una aprobada por clase no le quita nada: sigue aprobada, sigue
+contando y vuelve al marcar la casilla.
+
+**2 · La clase ahora se recalcula al editar.** `clasificarDe()` aplica en la
+vista la misma regla que el nodo `TrajectoryCategorizer`: «Fuera de vista» si el
+último punto quedó pegado al borde del cuadro (5 px) o si prolongando su
+velocidad terminal 30 frames se saldría; si no, «Proyección» dentro de la zona
+de seguridad y «Proyección peligrosa» fuera. Se rehace al dibujar y al mover un
+tirador, al recortar, al unir y al alisar — junto con el escape relativo, en una
+sola función (`reMedirGeometria`).
+
+Antes: una unida heredaba la clase del tramo que terminaba último, una recortada
+la de la original **aunque el recorte le quitara justo la punta por la que era
+«Fuera de vista»**, y una dibujada nacía «Proyección» fija cayera donde cayera.
+La clase manda en el color, en el filtro, en la censura del histograma y en el
+entregable. Comprobado: recortando al primer 25% las 4 «Fuera de vista» largas
+del caso, quedan 3 «Proyección» y 1 «Proyección peligrosa» — antes las 4 seguían
+diciendo «Fuera de vista».
+
+**Dos cosas que salieron al validar:**
+
+- El chequeo predictivo **solo se aplica con eje temporal**. Mide velocidad, y un
+  trazo dibujado no tiene: se rasteriza a 48 puntos fijos, así que el «paso por
+  punto» no dice nada de la rapidez. Suponer 1 frame por punto hacía que casi
+  toda curva dibujada saliera «Fuera de vista». Para esas queda el chequeo
+  estático, que es geometría pura.
+- **El caso congelado `3160-789` es anterior al chequeo predictivo** que agregó
+  el equipo (commit `8f35d48`). Con la regla estática sola, `clasificarDe`
+  reproduce **726 de 726**; con la regla actual completa coincide en 644 (88,7%)
+  y las 82 diferencias son todas hacia «Fuera de vista», que es exactamente lo
+  que ese chequeo agrega. O sea: la implementación es fiel, el caso es viejo.
+  En un análisis viejo, una trayectoria recién editada queda clasificada con la
+  regla nueva y sus vecinas con la vieja. Es el precio de no inventar una
+  herencia falsa, y solo afecta a lo que se edita.
+
+**Queda anotado, sin tocar:** un lazo de descarte alcanza también a las
+trayectorias que un filtro tiene **ocultas** (`atrapadas` solo excluye las
+descartadas), mientras que el recorte sí las respeta (`estado !== "activa"`). Es
+anterior a todo esto y nadie lo ha reportado, pero las dos herramientas deberían
+decidir igual.
+
+### P22 — Retomar donde quedaste ✅ **hecho 2026-09-11**
+> Todo esto viaja en la entrega **v9.1** (así la bautizó el equipo en la
+> reunión interna del 2026-09-11: se llamaba v10, pero se prefirió no subir
+> tanto de versión). Lo que entra: `entrega/V9.1.md`. El catálogo completo de
+> funcionalidades, con desde qué versión existe cada una:
+> `entrega/FUNCIONALIDADES.md`.
+
+**Estado:** implementado y probado contra el core corriendo. Salió de traer los
+cambios del equipo (25-08 al 08-09) y revisar qué se rompía con lo nuestro.
+
+**Lo que trajo el equipo y cambia el mapa:**
+- El pipeline ahora corre en **dos fases**: se pausa en
+  `ESPERANDO_PERCENTIL_USUARIO` (18%), el usuario elige el corte de ruido en un
+  slider sobre la máscara (`Step4.tsx`, nuevo paso React) y
+  `POST /api/resume/{job_id}` reanuda.
+- Por eso **el wizard tiene un paso más**: la vista nueva (el iframe) pasó de
+  `step-4` a **`step-5`**. Todo lo que apunte al paso 4 abre hoy otra pantalla.
+- El blast detector trae `fix thumbnails`; nada nuestro toca eso.
+
+**La regla que ordena esto (decisión del usuario, 2026-09-11):** el wizard se
+comporta como un wizard. Volver atrás pierde lo de adelante y *da igual*: los
+pasos 1-4 son rápidos. Lo único caro es la **edición manual del paso 5**, que
+son horas — «te fuiste a almorzar» no puede costar rehacer el análisis. Y dos
+pasadas distintas **no son compatibles**: si cargas a mano el archivo de otra
+pasada, verás trayectorias que no calzan, y eso es decisión de quien lo carga.
+
+**Lo que se hizo:**
+- `/api/resume` borra el `avance` junto con `json_data`, sin aviso. Los
+  `track_id` se reasignan al recalcular: el avance de la pasada anterior apunta
+  a rocas que ya no son esas — aplicarlo sería incorrecto **en silencio**, el
+  mismo modo de falla de la máscara global.
+- `/api/jobs` devuelve **`retomar_en`** (`edicion` | `percentil` | `null`) y un
+  `motivo` honesto por caso. La pantalla de entrada **ya no esconde** los
+  análisis a medias y abre cada uno donde quedó.
+- `Step4` acepta **`?job=`** por URL. Antes dependía de `step3Data.idProjection`,
+  que vive solo en memoria: cerrar el navegador ahí dejaba el análisis colgado
+  con la fase cara ya corrida. Al retomar abre su propio WebSocket y entra solo
+  a `step-5` cuando termina.
+- `DELETE /api/jobs/{id}` mira el **status**, no `is_running`: un job pausado la
+  tiene en `True` a propósito (mantiene vivo el WebSocket de progreso), y eso lo
+  hacía imborrable e invisible para siempre.
+- Un análisis que revienta ya no se ofrece: «Terminó con error», y se puede
+  borrar.
+
+**Límite conocido:** los pasos 1-2 no tienen job todavía (el video está en el
+blast detector), así que retomar vale **del paso 3 en adelante**.
+
+**Pendiente de esta tanda:** el commit `6350edd` borró 147 líneas de comentarios
+de `src/main.py` — repuestos en versión corta el 2026-09-11 — y otras 34 en
+`services.py`, 8 en `event_extractor.py` y 5 en `ai_smoke_filter.py`, **sin
+reponer**.
+
 
 ### P18 — Recortar trayectorias: quedarse con el tramo bueno ⬅ **pedido 2026-08-18, esperando go**
 **Estado:** anotado, sin empezar. El usuario da el go mañana.
@@ -70,6 +498,55 @@ tangentes ni siquiera se cruzan hacia adelante.
 
 Se dejó igual porque el pedido era **visual** —que no haya quiebre en V— y en eso
 funciona. Pero la fidelidad punto a punto no mejoró, y eso vuelve en P20.
+
+### P29 — Compartir el avance entre las dos vistas ✅ **la ida, hecha 2026-09-14** · la vuelta, descartada
+**Pregunta del usuario:** que al pasar de una vista a la otra se conserve el
+trabajo, como pasa hoy con el avance del pulido de trayectorias.
+
+**Lo que hay hoy, medido en el código:**
+
+| | vista de limpieza (nuestra) | vista anterior (`Step5.tsx`) |
+|---|---|---|
+| de dónde lee | `GET /api/results/{job}` **y** `GET /api/jobs/{job}/avance` | `step3Data.projections`, del contexto del wizard |
+| qué guarda | archivo `.json` **y** `PUT /api/jobs/{job}/avance` | **nada**: solo descarga CSV y PNG |
+| identidad de cada roca | el `track_id` del pipeline | **`Math.round(Math.random() * 100000)`** |
+| qué campos conserva | puntos, frames, clasificación, métricas, `estado`, `razón`, `aprobada`, `alisada`, `bezier`, `empalme`, `unida_de`, `recorte_de`, `asociación` | puntos, clasificación, distancia, 3 métricas y un color aleatorio |
+| ediciones | en el modelo, y viajan al archivo | en estado de React (`listDelete`, `listConfirm`, `bezierPoints`…), mueren al desmontar |
+
+**El punto que decide.** `wizardDataContext.tsx:525` le asigna a cada trayectoria
+un `id_roca` **aleatorio** y tira el `track_id`. Sin identidad estable no hay
+forma de decir «esta trayectoria es la que aprobaste»: en cada recarga la misma
+roca cambia de id. Y `Step5` no persiste, así que hoy no hay estado suyo que
+traer de vuelta aunque quisiéramos.
+
+**Recomendación:**
+
+- **Una vía (nuestra → la del compañero): HECHA.** Al pulsar «Ver con la vista
+  anterior», el wizard le pide a la vista de limpieza su estado **actual** por
+  `postMessage` (`flyrocks:dame-avance` → `flyrocks:avance-actual`), descarta lo
+  descartado y lo mapea al modelo de `Step5`. Se le pide a la vista y **no al
+  core** a propósito: el core solo tiene el último «Guardar avance», y lo que
+  importa es lo que hay en pantalla ahora.
+  - Medido sobre `casos/3160-789`: sin limpiar se llevan las 726; tras descartar
+    391 con un lazo, se llevan 335. El mensaje pesa 0,4 MB.
+  - Van con el **color por clase** en vez del color aleatorio con que nacen ahí,
+    así las dos vistas pintan lo mismo del mismo color.
+  - `Step5` les aplica encima sus propios sliders, así que puede mostrar menos
+    de las que recibe (98 de 335 con sus valores por defecto). El aviso lo dice,
+    o parece que el traspaso perdió trabajo.
+  - No entiende `aprobada` ni las Bézier: las pinta como polilíneas.
+- **La vuelta: descartada, y en su lugar un aviso.** Exigiría que `Step5`
+  conserve el `track_id`, que persista, y que aprenda `estado`, `razón`,
+  `aprobada`, `alisada`, `empalme`, `unida_de` y `recorte_de` — o cada paso por
+  ella **destruiría trabajo en silencio**, que es peor que no compartir nada. Al
+  volver se pide confirmación diciendo exactamente qué se pierde (lo editado
+  allá) y qué no (la limpieza, que sigue viva porque el iframe nunca se
+  desmonta — ver P28).
+- **Lo que de verdad hay que decidir antes es cuál de las dos vistas se queda.**
+  El propio comentario de `Step4Bifurcacion` dice que el interruptor existe «en
+  vez de decidir hoy cuál gana». Gastar el rehacer del modelo de `Step5` para
+  después apagarla sería tirar el trabajo; y si la que gana es la de ellos, el
+  puente correcto es el contrario.
 
 ### P20 — La unión como parábola editable ⬅ **pedido 2026-08-20**
 **Estado:** anotado, sin empezar.
@@ -758,3 +1235,12 @@ una tronadura el usuario lo cambia en la UI, hay que reflejarlo en el caso.
 | 2026-08-04 | Máscara de humo automática (idea del usuario): 91.1% de acierto vs el verde pintado |
 | 2026-08-05 | `demo/trayectorias.html` — trazado de parábolas sobre la máscara + exportación (demo cliente) |
 | 2026-08-06 | `debug/PARABOLAS.md` — por qué la parábola no se ve parábola en la imagen, y qué rol juega el trazado manual |
+| 2026-09-11 | P22 — retomar donde quedaste: merge con el equipo, la lista como único camino de vuelta y el avance atado a su pasada |
+| 2026-09-14 | P23 — el histograma graficaba la salida del área y no el alcance; el diámetro se inventaba cuando faltaba la zona de origen |
+| 2026-09-14 | P24 — motivo de cada trayectoria sin empalme, lupa para verlas y misma regla en pantalla y en el archivo |
+| 2026-09-14 | P25 — dar vuelta un trazo dibujado (tecla V) y recálculo del escape relativo en lo editado |
+| 2026-09-14 | P26 — la pantalla de entrada usaba el tema claro de MUI sobre el fondo azul: textos ilegibles |
+| 2026-09-14 | P27 — el lazo y el recorte se llevaban lo aprobado, y el contador de aprobadas no bajaba nunca |
+| 2026-09-14 | P28 — no había vuelta desde la vista del compañero; cambiar de vista mataba el iframe y podía expulsarte del asistente |
+| 2026-09-14 | P29 — la vista anterior se abre con lo que llevas limpiado; la vuelta avisa en vez de mezclar modelos incompatibles |
+| 2026-09-14 | P30 — el filtro por clase no alcanzaba a lo aprobado; la clase se recalcula al editar |

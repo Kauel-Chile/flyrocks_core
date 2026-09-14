@@ -257,13 +257,18 @@ def main() -> int:
     if args.zip:
         nombre = args.zip[:-4] if args.zip.lower().endswith(".zip") else args.zip
         archivo = destino.parent / nombre
-        if archivo.with_suffix(".zip").exists():
-            archivo.with_suffix(".zip").unlink()
+        # El .zip se PEGA al nombre, no se pone con with_suffix: un nombre
+        # como `Detovision_v9.1` tiene un ".1" que pathlib toma por extension,
+        # asi que with_suffix(".zip") devolvia `Detovision_v9.zip` — y este
+        # unlink borraba el paquete de OTRA version, ya entregada. Paso al
+        # armar el v9.1: se llevo por delante el zip del v9.
+        z = archivo.parent / f"{archivo.name}.zip"
+        if z.exists():
+            z.unlink()
         print(f"\n  comprimiendo...")
         shutil.make_archive(str(archivo), "zip",
                             root_dir=str(destino.parent),
                             base_dir=destino.name)
-        z = archivo.with_suffix(".zip")
         print(f"  {z}")
         print(f"  {mb(z.stat().st_size)}")
 

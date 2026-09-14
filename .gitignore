@@ -1,35 +1,104 @@
-# Python-generated files
+# ===========================================================================
+#  Un solo .gitignore para todo el repo
+# ===========================================================================
+# Las reglas de las subcarpetas viven aca, con su ruta delante, y NO en
+# .gitignore sueltos dentro de ellas.
+#
+# Por que: antes este archivo tenia un `debug/` a secas. Eso excluye la carpeta
+# ENTERA, asi que git ni siquiera entraba a leer el `debug/.gitignore` —que
+# estaba bien escrito y documentado— y ese curado no se aplicaba a nada nuevo.
+# Un archivo nuevo en debug/ quedaba fuera del repo sin avisar, y PENDIENTES.md
+# seguia versionado solo porque se habia agregado antes de esa regla.
+#
+# El criterio, en una linea: se versiona lo que define el producto y lo caro de
+# reproducir; no se versiona lo pesado, lo derivado y lo local.
+
+# --- Python ---------------------------------------------------------------
 __pycache__/
 *.py[oc]
 build/
 dist/
 wheels/
 *.egg-info
-
-# Virtual environments
 .venv
 
+# --- Estado local del core -------------------------------------------------
+# La base, los videos subidos y los artefactos de cada analisis. Si viajaran,
+# cualquiera que clone el repo arrancaria con nuestros analisis dentro.
 data/
-*.html
-src/temp_videos/
-src/flyrocks.db
 temp_videos/
+src/temp_videos/
 flyrocks.db
-debug/
+src/flyrocks.db
 
-# Los pesos del modelo de IA no se versionan: son binarios grandes que cambian
-# por su cuenta. Hay que ponerlos a mano donde el core los busque (ver V9.md).
-detovision_model_v18.onnx
+# --- Pesos del modelo de IA ------------------------------------------------
+# Binarios grandes que cambian por su cuenta. Se ponen a mano donde el core los
+# busca (ver entrega/V9.md).
 *.onnx
 !modelos/README.md
 
-# Residuos de correr el core desde la raiz del repo (antes de que los datos se
-# movieran a data/). Se quedan por compatibilidad con instalaciones viejas.
-/flyrocks.db
-/temp_videos/
 
-# El paquete de entrega ARMADO. Se regenera con entrega/armar_paquete.py, asi
-# que versionarlo seria guardar una copia de los tres servicios dentro de uno de
-# ellos. Lo que si se versiona es lo que lo define: el compose, el .bat y el
-# script, que estan en entrega/ y son cuatro archivos de texto.
+# ===========================================================================
+#  debug/  — el banco de trabajo
+# ===========================================================================
+# SI se versiona, y hace falta que se versione:
+#   - los scripts (caso_export, caso_serve, publicar_vista, homografia...)
+#   - los documentos: PENDIENTES.md es el backlog con todas las decisiones
+#     acordadas, y no existe en ningun otro lado
+#   - demo/vista.html: es el ULTIMO PASO DEL WIZARD. Se itera aca y viaja al
+#     cliente con publicar_vista.py. Es producto, no material de trabajo.
+#   - las calibraciones: h_matrix.json son 47 lineas que costaron una sesion de
+#     clicks y de las que cuelga toda la asociacion al pozo.
+#
+# NO se versiona lo pesado ni lo derivado:
+
+# El video del cliente (435 MB) y los zip sueltos.
+debug/*.mp4
+debug/*.zip
+# Volcados de trabajo sueltos en la raiz de debug/.
+debug/*.png
+# Planillas de seguimiento y notas sueltas: material de trabajo, no producto.
+debug/*.xlsx
+debug/chat*.txt
+
+# Salidas del pipeline (1,8 GB): derivados, se rehacen corriendo el pipeline.
+# EXCEPTO la homografia, que es justo lo caro de reproducir.
+debug/out/**
+!debug/out/7_preproceso/
+!debug/out/7_preproceso/05_tiros/
+!debug/out/7_preproceso/05_tiros/h_matrix.json
+
+# Casos congelados: 111 MB por caso (clip 88 MB, frame 12 MB, mascara 3,4 MB).
+# Se rehacen con caso_export.py desde el video y h_matrix.json, que si estan.
+debug/casos/
+
+# Presentaciones y capturas de reunion (2,7 GB): entregables de reunion, no
+# fuentes. El generador SI se versiona —son 21 KB de codigo— y el resultado no.
+# El .gitignore anterior decia esto mismo pero excluia la carpeta entera, asi
+# que build_ppt.py nunca llego al repo.
+debug/ppt/**
+!debug/ppt/build_ppt.py
+
+# Copias de seguridad de la vista: son puntos de restauracion locales, no
+# historia del producto. Para eso esta git.
+debug/demo/respaldos/
+
+
+# ===========================================================================
+#  entrega/  — lo que define el paquete del cliente
+# ===========================================================================
+# SI se versiona, y es de lo mas importante del repo:
+#   - armar_paquete.py, docker-compose.yml y detovision.bat: sin ellos nadie
+#     puede volver a construir lo que se le entrego al cliente
+#   - los documentos de cada version (V9.md, V9.1.md, FUNCIONALIDADES.md) y las
+#     instrucciones que viajan en el paquete
+#
+# NO se versiona lo ARMADO ni lo generado:
+
+# El paquete construido: seria guardar una copia de los tres servicios dentro
+# de uno de ellos, y son gigas. Se regenera con armar_paquete.py.
 entrega/salida/
+
+# Los cuadros de cambios en Excel: los genera cambios_v91_excel.py, que si esta
+# versionado. Se versiona lo que define el artefacto, no el artefacto.
+entrega/*.xlsx

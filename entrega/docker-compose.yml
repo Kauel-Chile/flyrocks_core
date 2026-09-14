@@ -62,6 +62,13 @@ services:
       # minutos en vez de ~8, cabe en equipos con menos memoria y sirve para
       # iterar en las vistas o si el modelo no esta disponible.
       IA_ACTIVA: "1"
+      # Horas que se conservan los analisis terminados. 0 = para siempre, que es
+      # lo que corresponde por defecto: aca vive el TRABAJO del cliente (sus
+      # trayectorias revisadas, sus informes), no material temporal. Se sube un
+      # numero solo si el disco de la maquina aprieta de verdad — y ojo, que
+      # borra sin preguntar. Para liberar espacio de a poco, la lista de
+      # analisis del asistente tiene un boton de eliminar por analisis.
+      RETENCION_HORAS: "0"
     volumes:
       - core_data:/app/data
     networks:

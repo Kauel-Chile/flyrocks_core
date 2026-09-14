@@ -42,6 +42,11 @@ def migrar():
         # ultimo: la lista de /api/jobs quedaria en orden de insercion de SQLite,
         # que es un detalle de implementacion y no una promesa.
         "creado_en": "TIMESTAMP",
+        # El trabajo manual sobre el analisis: aprobadas, descartes, recortes,
+        # uniones y filtros. Vive JUNTO al job y no solo en el archivo que el
+        # usuario baja, para que retomar sea abrir el analisis y ya — sin
+        # depender de que no haya vaciado su carpeta de Descargas.
+        "avance": "JSON",
     }
     with engine.begin() as con:
         for col, tipo in faltantes.items():
@@ -72,6 +77,13 @@ class Job(SQLModel, table=True):
     # Va como un solo JSON y no como seis columnas para poder sumarle campos
     # (el CSV de secuencia, por ejemplo) sin migrar la tabla cada vez.
     entrada: Optional[dict] = Field(default=None, sa_column=Column("entrada", JSON))
+
+    # La ULTIMA version del trabajo manual, sobrescrita en cada guardado. No es
+    # un historial: para conservar varias alternativas de un mismo analisis
+    # estan los archivos que el usuario baja, que son justamente el mismo
+    # formato. Aca vive lo que hace falta para "seguir donde iba", que es lo
+    # que se pide el 99% de las veces.
+    avance: Optional[dict] = Field(default=None, sa_column=Column("avance", JSON))
     
     @classmethod
     def update_status(cls, job_id: str, engine, **kwargs):

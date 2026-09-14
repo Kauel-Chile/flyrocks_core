@@ -228,6 +228,7 @@
     <button id="btnMalla">Malla</button>
     <button id="btnZonas">Zonas</button>
     <button id="btnEscape" title="Isolíneas de escape relativo, en diámetros de voladura">Escape</button>
+    <button id="btnAislar" title="Deja en pantalla solo la trayectoria seleccionada (I)">Aislar</button>
     <button id="btnDibujar">Dibujar trayectoria</button>
     <button id="btnLazo" title="Rodea trayectorias para descartarlas en masa (L). Por defecto solo agarra las que quedan ENTERAS dentro; con Alt agarra las que apenas tocan. Con Shift restaura en vez de descartar.">Lazo</button>
     <button id="btnUnir" title="Une dos trayectorias partidas por sus extremos (U). Selecciona una, activa Unir y haz clic en la otra.">Unir</button>
@@ -353,6 +354,42 @@
     </section>
 
     <section>
+      <h3>Trabajo</h3>
+      <div class="fila">
+        <span class="et">Pintar por</span>
+        <select id="selPintado" style="flex:1">
+          <option value="trabajo">Avance (lienzo / aprobadas)</option>
+          <option value="clase">Clase (peligrosa / proyección / fuera)</option>
+        </select>
+      </div>
+      <div class="fila" style="margin-top:7px">
+        <span class="et">Mostrar</span>
+        <select id="selLupa" style="flex:1">
+          <option value="todo">Todo</option>
+          <option value="lienzo">Solo el lienzo (lo que falta)</option>
+          <option value="aprobadas">Solo las aprobadas</option>
+          <option value="sin_empalme">Solo las sin empalme al origen</option>
+        </select>
+      </div>
+      <div class="fila" style="margin-top:7px">
+        <span class="et" title="Cuánto se acerca el trazo a la curva ajustada">Fuerza del alisado</span>
+        <input type="range" id="fAlisado" min="0" max="1" step="0.05" value="1">
+        <span class="val" id="vAlisado">1.00</span>
+      </div>
+      <div class="fila" style="margin-top:10px">
+        <button class="mini peligro" id="btnCosechar" style="flex:1"
+          title="Descarta lo que está en pantalla y no aprobaste. No toca lo que un filtro tiene oculto.">
+          Descartar el lienzo
+        </button>
+      </div>
+      <div style="color:var(--dim);font-size:11px;margin-top:8px;line-height:1.5">
+        <kbd>Enter</kbd> aprueba la seleccionada · <kbd>S</kbd> la alisa ·
+        <kbd>I</kbd> la aísla · <kbd>P</kbd> alterna el color.
+        Las exportaciones salen siempre por clase y con todo a la vista.
+      </div>
+    </section>
+
+    <section>
       <h3>Clases</h3>
       <label class="chk"><input type="checkbox" id="cPel" checked>
         <span class="punto" style="background:var(--peligro)"></span> Proyección peligrosa</label>
@@ -408,6 +445,12 @@
         <button class="mini" id="btnGuardar" style="flex:1">Guardar avance</button>
         <button class="mini" id="btnCargar" style="flex:1">Cargar</button>
       </div>
+      <div class="fila" style="margin-top:6px">
+        <button class="mini" id="btnOriginal" style="flex:1;display:none"
+          title="Vuelve al resultado del pipeline. Tu avance guardado no se borra.">
+          Ver el análisis original
+        </button>
+      </div>
       <input type="file" id="fileCaso" accept=".json" style="display:none">
       <div style="color:var(--dim);font-size:11px;margin-top:8px;line-height:1.5">
         Guarda tus filtros, descartes y trazos dibujados para retomar después.
@@ -426,6 +469,7 @@
     <span><kbd>Supr</kbd> descartar</span>
     <span><kbd>D</kbd> dibujar</span>
     <span><kbd>C</kbd> 2º manejador</span>
+    <span><kbd>V</kbd> dar vuelta</span>
   </span>
 </footer>
 
@@ -454,7 +498,33 @@ const F = {
   tor: 0, esc: 0, r2: 0, len: 0,
   clases: { "Proyección peligrosa": true, "Proyección": true, "Fuera de vista": true },
   verDesc: true, opDesc: 0.22,
+  // Aislar: cuando trae el id de una trayectoria, se dibuja SOLO esa. Es para
+  // trabajar de cerca sobre una traza sin las otras encima —recortarla, alisarla,
+  // mirar donde nace— y se apaga sola al seleccionar otra, porque si no queda
+  // una pantalla vacia sin explicacion.
+  aislada: null,
+  // Lupa de trabajo: "todo" | "lienzo" (lo que falta) | "aprobadas" (lo cosechado).
+  // NO toca el estado de nadie —es solo qué se dibuja— y las exportaciones la
+  // ignoran: nadie puede llevarse un entregable con "solo el lienzo" por haber
+  // dejado la lupa puesta.
+  lupa: "todo",
 };
+
+// El avance que el core tenia guardado para este job, entre que se lee y se
+// aplica. Vive fuera porque lo lee `cargarDesdeCore` y lo aplica `cargar`.
+let AVANCE_DEL_JOB = null;
+
+// Cuanto se acerca el trazo a la curva ajustada. 1 = queda sobre el modelo.
+const ALISADO = { fuerza: 1 };
+
+// El color mientras se limpia responde UNA pregunta: ¿ya pasé por esta o no?
+//
+// El color por clase es una CONCLUSION calculada sobre una deteccion que aun
+// esta sucia —fragmentada, con cola de humo, con ruido pegado—, asi que
+// mostrarla durante la limpieza es informacion prematura. Recien vale cuando la
+// trayectoria ya esta limpia, y para eso esta el modo "clase".
+const LIENZO = "#ffb82b";   // ambar: material crudo, sin revisar
+const APROB  = "#22d3ee";   // cian: aprobada, me la llevo
 
 const U = {
   // Opacidad de LOS TRAZOS, no del fondo. Antes este control atenuaba la
@@ -464,6 +534,10 @@ const U = {
   fondo: "mascara", opTraz: 1,
   malla: false, zonas: false, escape: false,
   sel: -1, dibujando: false, lazo: false, uniendo: false,
+  // "trabajo" (lienzo/aprobadas) o "clase" (peligrosa/proyeccion/fuera).
+  // Las exportaciones fuerzan "clase" pase lo que pase: el modo de trabajo es
+  // andamio y no puede filtrarse al informe del cliente.
+  pintado: "trabajo",
 };
 
 // Lazo de descarte en masa. `pts` va en coordenadas de IMAGEN, no de pantalla:
@@ -564,7 +638,22 @@ async function cargar(){
   });
 
   document.body.classList.add("cargada");
+
+  // El avance guardado reemplaza al caso recien armado. Va aca y no dentro de
+  // `cargarDesdeCore` para que use exactamente el mismo camino que un archivo
+  // soltado a mano: una sola forma de aplicar un avance, no dos parecidas.
+  if (AVANCE_DEL_JOB){
+    const av = AVANCE_DEL_JOB;
+    AVANCE_DEL_JOB = null;
+    const cuando = (av._meta && av._meta.guardado_en || "").replace("T", " ").slice(0, 16);
+    await aplicarCaso(av, `guardado en el servidor${cuando ? " el " + cuando : ""}`);
+    $("btnOriginal").style.display = "";
+    return;
+  }
+
   ajustarVista();
+  // Un caso congelado puede traer su vista guardada; un job del core no.
+  aplicarVista(C.vista);
   recalcular();
 }
 
@@ -654,6 +743,18 @@ async function cargarDesdeCore(api, job){
   const A = E.artefactos || {};
   const ruta = (r) => `${api}/temp_videos/${r}`;
 
+  // Si este analisis ya trae trabajo manual guardado, ESO es lo que hay que
+  // mostrar: abrir el resultado crudo del pipeline cuando el usuario ya lo
+  // reviso seria devolverle una pantalla que el ya arreglo, y lo primero que
+  // veria es la marana completa otra vez.
+  AVANCE_DEL_JOB = null;
+  if (!new URLSearchParams(location.search).has("sin_avance")){
+    try {
+      const ra = await fetch(`${api}/api/jobs/${job}/avance`);
+      if (ra.ok) AVANCE_DEL_JOB = await ra.json();
+    } catch { /* sin avance guardado: se abre el analisis tal cual */ }
+  }
+
   // El tamaño del cuadro no viaja en la respuesta; se toma de la máscara, que
   // es del mismo tamaño que el video.
   IMG.mascara = await cargarImg(ruta(A.mascara || "mascara_cambios.png"));
@@ -691,7 +792,17 @@ async function cargarDesdeCore(api, job){
   if (!h3) throw new Error("la homografía del job no tiene 9 números válidos");
   const escala = escalaDeH(h3);
   const areaM2 = areaPoly(origen) / (escala * escala);
-  const diam = 2 * Math.sqrt(Math.max(areaM2, 1) / Math.PI);
+  // Si la zona de origen no llegó (o llegó en un formato que `aPares` no
+  // reconoce), el diámetro queda en NULL y no en un número inventado. Antes
+  // había un `Math.max(areaM2, 1)` que lo clavaba en 1.13 m: con eso el
+  // `escape_relativo` —que viene normalizado por el diámetro— se convertía a
+  // metros multiplicando por 1.13, o sea que la voladura entera medía menos de
+  // 4 m y todo caía en la primera barra del histograma, sin un solo error.
+  const diam = areaM2 > 0 ? 2 * Math.sqrt(areaM2 / Math.PI) : null;
+  if (!diam)
+    console.warn("[flyrocks] el job no trae zona de origen (origin_zone): sin "
+               + "ella no hay diámetro de voladura, y `salida_area_m` y el "
+               + "filtro de escape quedan sin unidad");
 
   // La malla la proyecta el core a partir del CSV de secuencia que sube el
   // wizard. Si el usuario no lo cargó (es opcional), el job llega sin malla: la
@@ -728,7 +839,7 @@ async function cargarDesdeCore(api, job){
                escala_px_por_m: +escala.toFixed(4),
                nadir: [W / 2, H / 2], k: 0, sigma_grados: 4 },
     zonas: { origen, seguridad, origen_mundo: null,
-             diametro_equiv_m: +diam.toFixed(2),
+             diametro_equiv_m: diam != null ? +diam.toFixed(2) : null,
              seguridad_m: separacionMedia(origen, seguridad) / escala },
     malla,
     proyecciones: normalizarDelCore(J.json_data || {}),
@@ -874,6 +985,104 @@ function hullDe(pts){
   return media(p).concat(media(p.reverse()));
 }
 
+// La clase de una trayectoria con la MISMA regla que el nodo del pipeline
+// (`TrajectoryCategorizer`), que depende SOLO de donde termina el vuelo:
+//
+//   1. «Fuera de vista» si el ultimo punto quedo pegado al borde del cuadro
+//      (margen de 5 px), o si prolongando su velocidad terminal 30 frames se
+//      saldria del cuadro — la roca seguia viajando cuando se perdio.
+//   2. Si no: «Proyeccion» si cae DENTRO de la zona de seguridad, y
+//      «Proyeccion peligrosa» si cae fuera.
+//
+// Hace falta aca porque editar una trayectoria le cambia donde termina, y la
+// clase no se volvia a mirar: una unida heredaba la del tramo que terminaba
+// ultimo, una recortada la de la original —aunque el recorte le quitara justo
+// la punta que la sacaba del cuadro— y una dibujada nacia «Proyeccion» fija,
+// cayera donde cayera. La clase manda en el color, en el filtro, en el
+// histograma (censura) y en el entregable.
+const MARGEN_CUADRO_PX = 5;          // margin_px del nodo
+const FRAMES_INERCIA = 30;           // extrapolation_frames del nodo
+
+function clasificarDe(T){
+  const W = C.meta && C.meta.ancho, H = C.meta && C.meta.alto;
+  const zona = C.zonas && C.zonas.seguridad;
+  const p = T.puntos;
+  if (!W || !H || !zona || zona.length < 3 || !p || p.length < 2) return null;
+
+  const n = p.length >> 1;
+  const lx = p[p.length - 2], ly = p[p.length - 1];
+  let fuera = lx <= MARGEN_CUADRO_PX || lx >= W - MARGEN_CUADRO_PX
+           || ly <= MARGEN_CUADRO_PX || ly >= H - MARGEN_CUADRO_PX;
+
+  // El chequeo predictivo SOLO con eje temporal. Mide velocidad, y un trazo
+  // dibujado a mano no tiene: se rasteriza a 48 puntos fijos, asi que el "paso
+  // por punto" no dice nada de la rapidez de la roca — sale enorme en una curva
+  // larga y minusculo en una corta. Suponer 1 frame por punto hacia que casi
+  // toda curva dibujada saliera «Fuera de vista» al extrapolarla 30 frames.
+  // Para esas queda solo el chequeo estatico, que es geometria pura.
+  if (!fuera && n >= 2 && T.frames && T.frames.length === n){
+    // Velocidad promediada sobre los ultimos 3 puntos, como el nodo, para que
+    // un salto del centroide no decida la clase.
+    const k = Math.min(3, n);
+    const px = p[p.length - 2*k], py = p[p.length - 2*k + 1];
+    const df = T.frames[n-1] - T.frames[n-k];
+    if (df > 0){
+      const fx = lx + ((lx - px) / df) * FRAMES_INERCIA;
+      const fy = ly + ((ly - py) / df) * FRAMES_INERCIA;
+      if (fx <= 0 || fx >= W || fy <= 0 || fy >= H) fuera = true;
+    }
+  }
+  if (fuera) return "Fuera de vista";
+  const poly = zona.map(q => ({ x: q[0], y: q[1] }));
+  return dentroPoly(lx, ly, poly) ? "Proyección" : "Proyección peligrosa";
+}
+
+// El escape relativo con la MISMA definicion que el nodo del pipeline
+// (`OriginAreaExpansion`): la distancia maxima a la que un punto del trazo se
+// sale del borde del poligono de origen, dividida por el diametro equivalente
+// de la voladura. Todo en pixeles, igual que el core — el cociente es
+// adimensional, y para pasarlo a metros se multiplica por `diametro_equiv_m`.
+//
+// Hace falta aca porque lo que toca el usuario no vuelve a pasar por el
+// pipeline: una trayectoria dibujada nacia con 0 fijo y una unida heredaba el
+// valor del tramo que mas se alejaba. Ese 0 sale despues en el entregable como
+// `salida_area_m: 0`, que se lee como «esta roca no salio del area» y es falso.
+function bordeDeOrigen(){
+  const z = C.zonas;
+  if (!z || !z.origen || z.origen.length < 3) return null;
+  const V = hullDe(z.origen.map(q => ({ x: q[0], y: q[1] })));
+  if (V.length < 3) return null;
+  const areaPx = areaPoly(V.map(q => [q.x, q.y]));
+  if (!(areaPx > 0)) return null;
+  const cx = V.reduce((a, q) => a + q.x, 0) / V.length;
+  const cy = V.reduce((a, q) => a + q.y, 0) / V.length;
+  const n = [], c = [];
+  for (let i = 0; i < V.length; i++){
+    const a = V[i], b = V[(i + 1) % V.length];
+    let nx = b.y - a.y, ny = -(b.x - a.x);
+    const L = Math.hypot(nx, ny) || 1e-6;
+    nx /= L; ny /= L;
+    // La normal tiene que mirar hacia AFUERA: si apunta al centroide, se da vuelta.
+    if (nx * (cx - a.x) + ny * (cy - a.y) > 0){ nx = -nx; ny = -ny; }
+    n.push([nx, ny]);
+    c.push(nx * a.x + ny * a.y);
+  }
+  return { n, c, diam: 2 * Math.sqrt(areaPx / Math.PI) };
+}
+
+function escapeRelativoDe(T){
+  const b = bordeDeOrigen();
+  if (!b || !T.puntos || T.puntos.length < 2) return null;
+  let max = -Infinity;
+  const p = T.puntos;
+  for (let k = 0; k < p.length; k += 2)
+    for (let j = 0; j < b.n.length; j++){
+      const d = p[k] * b.n[j][0] + p[k+1] * b.n[j][1] - b.c[j];
+      if (d > max) max = d;
+    }
+  return max <= 0 ? 0 : +(max / b.diam).toFixed(2);
+}
+
 // Rasteriza la curva manual a la MISMA forma que traen las del pipeline (lista
 // plana de puntos). Asi el hit-test, el guardado y cualquier consumidor de
 // `puntos` funcionan igual sin importar de donde salio la trayectoria.
@@ -894,6 +1103,9 @@ function rasterizar(T){
   T.puntos = pts;
   const esc = C.calibra.escala_px_por_m || 1;
   T.distancia_m = +(Math.hypot(B.p2.x - B.p0.x, B.p2.y - B.p0.y) / esc).toFixed(2);
+  // Aca y no en `fijarNuevo`: la curva se sigue moviendo despues de fijarla
+  // —los tiradores Bezier— y la clase y el escape tienen que seguirla.
+  reMedirGeometria(T);
 }
 
 function preparar(T){
@@ -961,6 +1173,107 @@ function derivarRangos(){
   }
 }
 
+// Repone la vista guardada en el caso: filtros, clases, capas y asociacion.
+//
+// Va DESPUES de derivarRangos(), que deja los cuatro controles en "ver todas"
+// porque los deriva de los datos. Sin esto, "Guardar avance" escribia los
+// umbrales en el archivo y al cargarlo se ignoraban: el usuario volvia a la
+// marana completa que acababa de limpiar, con los sliders mintiendo sobre lo
+// que estaba viendo.
+//
+// Los toggles se reponen CLICKEANDO el boton en vez de asignando la variable:
+// asi la clase .on del boton, las capas que se encienden solas (la malla al
+// asociar) y la guarda de "este job no trae malla" siguen valiendo, sin
+// duplicar aca reglas que ya viven en el listener.
+function aplicarVista(v){
+  if (!v) return;
+
+  // Un umbral fuera del rango derivado dejaria el control clavado en el tope
+  // mintiendo sobre el valor real; se recorta al rango y se usa lo recortado.
+  const poner = (id, val) => {
+    const el = $(id);
+    const lo = parseFloat(el.min), hi = parseFloat(el.max);
+    el.value = Math.min(Math.max(val, lo), hi);
+    return parseFloat(el.value);
+  };
+
+  if (isFinite(v.tortuosidad)){
+    // El control va invertido: umbral = TOR_MAX - control.
+    F.tor = TOR_MAX - poner("fTor", TOR_MAX - v.tortuosidad);
+    $("vTor").textContent = F.tor.toFixed(3);
+  }
+  if (isFinite(v.escape_relativo)){
+    F.esc = poner("fEsc", v.escape_relativo);
+    $("vEsc").textContent = fmt(F.esc);
+  }
+  if (isFinite(v.largo_min)){
+    F.len = poner("fLen", v.largo_min);
+    $("vLen").textContent = fmt(F.len);
+  }
+  if (isFinite(v.r2_score)){
+    // El control es logaritmico en la distancia a 1: se invierte r2DeControl.
+    //
+    // Con r2 = 1 la inversa se va a infinito, y tratarlo como "no numero" lo
+    // mandaria a 0: el filtro MAS duro volveria como el mas blando, o sea al
+    // reves de lo que el usuario dejo. Infinito es el tope del control, y el
+    // recorte de `poner` lo deja justo ahi.
+    const bruto = v.r2_score > 0 ? Math.log10(1 / (1 - v.r2_score)) : 0;
+    const s = Number.isNaN(bruto) ? 0 : bruto;
+    const sc = poner("fR2", s);
+    F.r2 = r2DeControl(sc);
+    $("vR2").textContent = sc <= 0 ? "0" : F.r2.toFixed(Math.min(4, Math.ceil(sc) + 1));
+  }
+
+  if (v.clases){
+    for (const [id, clase] of [["cPel", "Proyección peligrosa"],
+                               ["cPro", "Proyección"],
+                               ["cFue", "Fuera de vista"]]){
+      if (typeof v.clases[clase] === "boolean"){
+        F.clases[clase] = v.clases[clase];
+        $(id).checked = v.clases[clase];
+      }
+    }
+  }
+
+  if (typeof v.ver_descartadas === "boolean"){
+    F.verDesc = v.ver_descartadas;
+    $("verDesc").checked = F.verDesc;
+  }
+
+  const capas = v.capas || {};
+  if (capas.fondo && [...$("selFondo").options].some(o => o.value === capas.fondo)){
+    $("selFondo").value = capas.fondo;
+    $("selFondo").dispatchEvent(new Event("change"));
+  }
+  for (const [clave, boton] of [["malla", "btnMalla"], ["zonas", "btnZonas"],
+                                ["escape", "btnEscape"]]){
+    if (typeof capas[clave] === "boolean" && capas[clave] !== U[clave]) $(boton).click();
+  }
+
+  if (v.pintado === "clase" || v.pintado === "trabajo"){
+    U.pintado = v.pintado;
+    $("selPintado").value = U.pintado;
+  }
+  if (["todo", "lienzo", "aprobadas", "sin_empalme"].includes(v.lupa)){
+    F.lupa = v.lupa;
+    $("selLupa").value = F.lupa;
+  }
+  if (isFinite(v.alisado)){
+    ALISADO.fuerza = Math.max(0, Math.min(1, v.alisado));
+    $("fAlisado").value = ALISADO.fuerza;
+    $("vAlisado").textContent = ALISADO.fuerza.toFixed(2);
+  }
+
+  const asoc = v.asoc || {};
+  if (asoc.temporal != null && A.hayTiempo){
+    A.temporal = !!asoc.temporal;
+    $("chkTemporal").checked = A.temporal;
+  }
+  // Al final: encender la asociacion enciende la malla sola, y asi no pisa lo
+  // que la propia vista guardada dijo de las capas.
+  if (asoc.activo && !A.activo) $("btnAsociar").click();
+}
+
 // r2 = 1 - 10^-s. Con s=0 el umbral es 0 (no filtra).
 const r2DeControl = (s) => (s <= 0) ? 0 : 1 - Math.pow(10, -s);
 
@@ -992,7 +1305,21 @@ function recalcular(){
     if (T.estado === "descartada"){ cuenta.descartada++; continue; }
 
     let razon = null;
-    // LO TOCADO A MANO NO PASA POR LOS FILTROS.
+
+    // EL FILTRO POR CLASE SE APLICA A TODO, incluido lo aprobado y lo tocado a
+    // mano. No es un juicio sobre la calidad de la deteccion —no dice «esta
+    // traza es mala»—, es un control de VISTA: «enseñame solo las peligrosas».
+    // Esconder una aprobada por clase no le quita nada: sigue aprobada, sigue
+    // contando y vuelve en cuanto se marca la casilla otra vez.
+    //
+    // Estaba metido entre los umbrales de calidad, y ahi la casilla dejaba de
+    // responder justo sobre las trayectorias que mas importan: al abrir un
+    // trabajo guardado, TODO lo aprobado ignoraba el filtro. Medido sobre
+    // `casos/3160-789`: desde cero, apagar «Proyeccion» dejaba 0 de esa clase;
+    // con 200 aprobadas dejaba 141 en pantalla, las 141 aprobadas.
+    if (!F.clases[T.clasificacion]) razon = "clase";
+
+    // LO TOCADO A MANO NO PASA POR LOS UMBRALES DE CALIDAD.
     //
     // Los filtros describen la calidad de la DETECCION automatica: largo,
     // tortuosidad, R2 y escape los calcula el tracker sobre lo que vio. Una
@@ -1006,9 +1333,12 @@ function recalcular(){
     // mismos umbrales que una deteccion cruda no tiene sentido.
     //
     // Para sacarlas hay que descartarlas a mano, que es explicito y reversible.
-    if (!esAMano(T)){
-      if (!F.clases[T.clasificacion])           razon = "clase";
-      else if (T.n < F.len)                     razon = "largo";
+    // Lo APROBADO tampoco pasa por los filtros, por la misma razon que lo
+    // tocado a mano: ya paso por el juicio de una persona, que es mas fuerte
+    // que cualquier umbral. Ademas es la garantia que hace segura la cosecha —
+    // una aprobada no puede escaparse de la pantalla por mover un slider.
+    else if (!esAMano(T) && !T.aprobada){
+      if (T.n < F.len)                          razon = "largo";
       else if (num(T.tortuosidad) > F.tor)      razon = "tortuosidad";
       else if (num(T.escape_relativo) < F.esc)  razon = "escape";
       else if (num(T.r2_score) < F.r2)          razon = "r2";
@@ -1018,6 +1348,17 @@ function recalcular(){
     T.razon = razon;
     if (razon){ razones[razon] = (razones[razon] || 0) + 1; }
     else cuenta.activa++;
+  }
+
+  // Si lo aislado dejo de existir o de verse —lo descarto un lazo, lo absorbio
+  // una union, lo reemplazo un recorte por un camino que nadie previo— el
+  // aislamiento se suelta solo. Una pantalla en blanco sin explicacion se lee
+  // como "se borro todo mi trabajo", y no hay forma de que el usuario adivine
+  // que lo unico que pasa es que esta mirando por una rendija cerrada.
+  if (F.aislada != null && !C.proyecciones.some(T => T.id === F.aislada && T.estado === "activa")){
+    F.aislada = null;
+    pintarAislada();
+    avisar("La trayectoria aislada ya no esta a la vista: se muestran todas de nuevo");
   }
 
   pintarCuentas(cuenta, razones);
@@ -1034,6 +1375,16 @@ const num = (v) => (v === null || v === undefined || !isFinite(v)) ? 0 : v;
 const A_MANO = ["manual", "unida", "recorte"];
 const esAMano = (T) => A_MANO.includes(T.fuente);
 
+// Aprobada = cosechada Y todavia en el trabajo. Una que se descarto a mano
+// conserva la marca —descartar es reversible, y al restaurarla vuelve aprobada
+// sin tener que volver a mirarla— pero deja de contar como cosecha: el contador
+// de «Aprobadas» decia lo mismo despues de descartar una, asi que el numero no
+// se movia nunca hacia abajo y dejaba de describir lo que hay en pantalla.
+//
+// Una aprobada nunca queda "oculta" —los filtros la exentan—, asi que esto es
+// equivalente a `estado === "activa"`, pero se escribe por lo que significa.
+const esAprobada = (T) => !!T.aprobada && T.estado !== "descartada";
+
 function pintarCuentas(cuenta, razones){
   const P = C.proyecciones;
   const porClase = {};
@@ -1046,9 +1397,20 @@ function pintarCuentas(cuenta, razones){
       <span class="punto" style="background:${COLOR[c]}"></span>${c}</span>
       <span class="n">${porClase[c] || 0}</span></div>`).join("");
 
+  // El avance de la limpieza, que es lo que uno mira cada tanto para saber si
+  // esto se acaba algun dia: cuanto llevo cosechado y cuanto lienzo queda.
+  const aprobadas = P.filter(esAprobada).length;
+  const lienzo = cuenta.activa - aprobadas;
+
   $("cuentas").innerHTML = filas + `
     <div class="cuenta total"><span class="lbl">Visibles</span>
-      <span class="n">${cuenta.activa} <span style="color:var(--dim);font-weight:400">/ ${P.length}</span></span></div>`;
+      <span class="n">${cuenta.activa} <span style="color:var(--dim);font-weight:400">/ ${P.length}</span></span></div>
+    <div class="cuenta"><span class="lbl">
+      <span class="punto" style="background:${APROB}"></span>Aprobadas</span>
+      <span class="n" style="color:${APROB}">${aprobadas}</span></div>
+    <div class="cuenta"><span class="lbl">
+      <span class="punto" style="background:${LIENZO}"></span>Lienzo por revisar</span>
+      <span class="n">${lienzo}</span></div>`;
 
   const et = { clase:"por clase", largo:"por largo mínimo", tortuosidad:"por tortuosidad",
                escape:"por escape relativo", r2:"por R²" };
@@ -1183,7 +1545,10 @@ function tangenteFinal(T){
   return tg ? { x: -tg.x, y: -tg.y, n: tg.n, fiable: tg.fiable } : null;
 }
 
-function asociar(T){
+// `ignorarTiempo` corre la misma asociacion SIN el filtro causal. No sirve
+// para asociar: sirve para responder «¿esta sin pozo por geometria o porque el
+// tiempo lo descarto?», que son dos arreglos distintos.
+function asociar(T, ignorarTiempo){
   if (!C.malla.pozos.length) return [];
   const tg = tangenteInicial(T);
   if (!tg) return [];
@@ -1205,7 +1570,7 @@ function asociar(T){
   // El calce temporal entra DENTRO del ranking, no como filtro posterior: si
   // el mejor candidato geometrico resulta imposible en el tiempo, el segundo
   // toma su lugar en vez de quedarse la trayectoria sin pozo.
-  const usaT = A.temporal && A.hayTiempo && T.t_ini != null;
+  const usaT = !ignorarTiempo && A.temporal && A.hayTiempo && T.t_ini != null;
 
   const res = [];
   const pozos = C.malla.pozos;
@@ -1249,18 +1614,36 @@ function nivelAsoc(cand){
 
 function refrescarAsoc(){
   A.mejor = [];
-  if (!A.activo) return;
+  if (!A.activo){
+    for (const T of C.proyecciones) T.sin_empalme = null;
+    return;
+  }
   A.mejor = C.proyecciones.map(T => {
+    T.asociacion = null;
+    // `sin_empalme` guarda POR QUE quedo sin origen, no solo que quedo. Sin el
+    // motivo la unica salida era abrirlas una por una; con el, el resumen dice
+    // cuantas hay de cada tipo y la lupa las junta en pantalla para corregirlas.
+    T.sin_empalme = null;
     if (T.estado !== "activa") return -1;
-    if (T.n < A.nMin && !T.bezier) return -1;   // 2 puntos no dan tangente
+    if (!C.malla.pozos.length){ T.sin_empalme = "sin malla"; return -1; }
+    if (T.n < A.nMin && !T.bezier){ T.sin_empalme = "pocos puntos"; return -1; }
     const c = asociar(T);
-    T.asociacion = c.length
-      ? { pozo: C.malla.pozos[c[0].i].id, conf: +c[0].conf.toFixed(3),
-          nivel: nivelAsoc(c), fiable: !!c.fiable,
-          dt_frames: c[0].dt != null ? +c[0].dt.toFixed(1) : null,
-          temporal: A.temporal && A.hayTiempo }
-      : null;
-    return c.length ? c[0].i : -1;
+    if (!c.length){
+      // Dos causas muy distintas: o no hay ningun pozo detras del inicio del
+      // trazo, o los habia y el calce temporal los declaro imposibles. La
+      // segunda se arregla moviendo el ancla o la tolerancia; la primera,
+      // corrigiendo el trazo. La pasada extra solo corre sobre las que fallaron.
+      const conGeometria = (A.temporal && A.hayTiempo) ? asociar(T, true) : [];
+      T.sin_empalme = conGeometria.length ? "calce temporal"
+                    : !tangenteInicial(T)  ? "sin tangente"
+                    : "sin pozo detras";
+      return -1;
+    }
+    T.asociacion = { pozo: C.malla.pozos[c[0].i].id, conf: +c[0].conf.toFixed(3),
+                     nivel: nivelAsoc(c), fiable: !!c.fiable,
+                     dt_frames: c[0].dt != null ? +c[0].dt.toFixed(1) : null,
+                     temporal: A.temporal && A.hayTiempo };
+    return c[0].i;
   });
 }
 
@@ -1664,18 +2047,22 @@ function dibujarTrazos(){
     gz.strokeStyle = "#7c869b";
     gz.lineWidth = ancho * 0.8;
     for (const T of C.proyecciones)
-      if (T.estado === "descartada") trazar(T);
+      if (T.estado === "descartada" && pasaLupa(T)) trazar(T);
     gz.globalAlpha = 1;
   }
 
-  gz.lineWidth = ancho;
   gz.lineCap = "round"; gz.lineJoin = "round";
   gz.globalAlpha = U.opTraz;
   for (const T of C.proyecciones){
     if (T.estado !== "activa") continue;
-    gz.strokeStyle = COLOR[T.clasificacion] || "#9aa4b8";
+    if (!pasaLupa(T)) continue;
+    gz.strokeStyle = colorDe(T);
+    // Lo aprobado va mas grueso: en modo clase es lo unico que lo distingue del
+    // lienzo, y en modo trabajo refuerza que eso ya es producto, no material.
+    gz.lineWidth = T.aprobada ? ancho * 1.6 : ancho;
     trazar(T);
   }
+  gz.lineWidth = ancho;
   gz.globalAlpha = 1;
 
   if (A.activo) dibujarEmpalmes(ancho);
@@ -1683,6 +2070,55 @@ function dibujarTrazos(){
   if (NUEVO) dibujarNuevo();
   if (A.activo) dibujarNadir();
   if (LAZO.pts.length) dibujarLazo();
+}
+
+// El color de un trazo depende del MODO, no de la trayectoria: en trabajo
+// responde "¿ya pase por esta?" y en clase responde "¿que es?".
+function colorDe(T){
+  if (U.pintado === "clase") return COLOR[T.clasificacion] || "#9aa4b8";
+  return T.aprobada ? APROB : LIENZO;
+}
+
+// La lupa de trabajo. Es solo visual: una trayectoria que la lupa esconde sigue
+// activa, sigue contando en el entregable y sigue estando ahi. Por eso las
+// exportaciones la ignoran (`conVistaLimpia`) y por eso no toca `estado`.
+function pasaLupa(T){
+  if (F.aislada != null)      return T.id === F.aislada;
+  if (F.lupa === "lienzo")    return !T.aprobada;
+  if (F.lupa === "aprobadas") return !!T.aprobada;
+  // Las que quedaron sin tiro de origen. Es el modo para corregirlas: sin esto
+  // la unica forma de encontrarlas era abrir una por una y mirar el panel.
+  if (F.lupa === "sin_empalme") return !!T.sin_empalme;
+  return true;
+}
+
+// Corre `fn` con la vista en su forma de ENTREGABLE: pintado por clase y sin
+// lupa. Es lo que separa el andamio del informe — el cliente recibe siempre lo
+// mismo, no lo que quedo puesto en pantalla al momento de exportar.
+function conVistaLimpia(fn){
+  const pintado = U.pintado, lupa = F.lupa, aislada = F.aislada;
+  U.pintado = "clase"; F.lupa = "todo"; F.aislada = null;
+  try { return fn(); }
+  finally { U.pintado = pintado; F.lupa = lupa; F.aislada = aislada; }
+}
+
+// Aislar y volver. Se guarda el ID y no el indice: recortar y unir crean
+// trayectorias nuevas y reordenan el arreglo, y un indice guardado terminaria
+// apuntando a otra cosa.
+function alternarAislada(){
+  if (F.aislada != null){ F.aislada = null; avisar("Aislamiento apagado"); }
+  else {
+    if (U.sel < 0){ avisar("Selecciona una trayectoria para aislarla"); return; }
+    F.aislada = C.proyecciones[U.sel].id;
+    avisar("Aislada — I para volver a verlas todas");
+  }
+  pintarAislada();
+  dibujar();
+}
+
+function pintarAislada(){
+  const b = $("btnAislar");
+  if (b) b.classList.toggle("on", F.aislada != null);
 }
 
 // Cuña de retroceso: por donde pudo haber venido la roca. Se ABRE con la
@@ -2210,8 +2646,13 @@ cz.addEventListener("mousedown", (e) => {
     // empuja la unida al final, y deshacer es exactamente revertir esas tres.
     const antes = copiaCampos([U.sel, j], ["estado", "razon"]);
     const selAntes = U.sel;
+    const aisladaAntes = F.aislada;
+    const idsUnidos = [C.proyecciones[U.sel].id, C.proyecciones[j].id];
     const nuevo = unirTrayectorias(U.sel, j);
     if (nuevo != null){
+      // Igual que el recorte: la unida es una trayectoria nueva con id propio.
+      if (aisladaAntes != null && idsUnidos.includes(aisladaAntes))
+        F.aislada = C.proyecciones[nuevo].id;
       // Por referencia y no por indice: si mas adelante alguien inserta o quita
       // trayectorias, el indice guardado apuntaria a otra cosa.
       const unida = C.proyecciones[nuevo];
@@ -2220,6 +2661,8 @@ cz.addEventListener("mousedown", (e) => {
         if (k >= 0) C.proyecciones.splice(k, 1);
         volcarCampos(antes, ["estado", "razon"]);
         U.sel = selAntes;
+        F.aislada = aisladaAntes;
+        pintarAislada();
       });
       U.sel = nuevo;
       alternarUnir();          // una activación, una unión
@@ -2248,7 +2691,14 @@ cz.addEventListener("mousedown", (e) => {
       }
     }
     const i = buscar(p);
-    if (i >= 0){ U.sel = i; verDetalle(); dibujar(); return; }
+    if (i >= 0){
+      // Elegir otra traza mientras hay una aislada apaga el aislamiento: si no,
+      // el clic no muestra nada y parece que la vista se rompio.
+      if (F.aislada != null && C.proyecciones[i].id !== F.aislada){
+        F.aislada = null; pintarAislada();
+      }
+      U.sel = i; verDetalle(); dibujar(); return;
+    }
   }
   arrastre = { x: e.clientX, y: e.clientY, vx: V.x, vy: V.y };
   document.body.classList.add("paneando");
@@ -2354,6 +2804,7 @@ function buscar(p){
     const T = C.proyecciones[i];
     if (T.estado === "oculta") continue;
     if (T.estado === "descartada" && !F.verDesc) continue;
+    if (!pasaLupa(T)) continue;
     const b = T.bb;
     if (p.x < b.x0 - tol || p.x > b.x1 + tol || p.y < b.y0 - tol || p.y > b.y1 + tol) continue;
     const d = distancia(p, T.puntos);
@@ -2405,29 +2856,90 @@ function verDetalle(){
     (manual ? `<div style="color:var(--dim);font-size:11px;margin-top:8px;line-height:1.5">
         Arrastra los nodos para ajustarla.<br>
         <kbd>C</kbd> alterna el segundo manejador (curva asimétrica).<br>
+        <kbd>V</kbd> da vuelta el sentido: el tiro de origen se busca desde el
+        <b>inicio</b> del trazo hacia atrás, así que dibujada al revés no
+        encuentra pozo.<br>
         No la afectan los filtros de calidad.</div>` : "") +
     (unida ? `<div style="color:var(--dim);font-size:11px;margin-top:8px;line-height:1.5">
         Unida de <b>${(T.unida_de || []).join("</b> y <b>")}</b>, que quedaron
         descartados.<br>
-        La tortuosidad se recalculó sobre el trazo completo; el escape relativo
-        y el R² se heredaron del valor más conservador de los dos.</div>` : "") +
+        La tortuosidad y el escape relativo se recalcularon sobre el trazo
+        completo —el escape incluye el tramo reconstruido—; el R² se heredó del
+        valor más conservador de los dos.</div>` : "") +
     panelCandidatos(T) +
     `<div class="fila" style="margin-top:10px">
+       <button class="mini" id="btnAprob" style="flex:1;${T.aprobada
+         ? `background:${APROB};color:#06222a;font-weight:600;border-color:${APROB}` : ""}">
+         ${T.aprobada ? "✓ Aprobada" : "Aprobar"}</button>
        <button class="mini ${T.estado === "descartada" ? "" : "peligro"}" id="btnDesc">
          ${T.estado === "descartada" ? "Restaurar" : "Descartar"}</button>
-     </div>`;
+     </div>
+     <div class="fila" style="margin-top:6px">
+       <button class="mini" id="btnAlisar" style="flex:1"
+         title="Quita el glitter respetando la forma. No mueve los extremos: el alcance no cambia.">
+         Alisar${T.alisada ? " otra vez" : ""}</button>
+       <button class="mini" id="btnEnderezar" style="flex:1"
+         title="Fuerza el trazo entero contra un vuelo balístico. Cambia la forma: úsalo solo si la traza debería ser un vuelo limpio.">
+         Enderezar</button>
+     </div>` +
+    // Solo para las dibujadas: son las unicas que pueden salir al reves.
+    (T.frames ? "" : `<div class="fila" style="margin-top:6px">
+       <button class="mini" id="btnVuelta" style="flex:1"
+         title="Intercambia el inicio y el final del trazo. El origen se busca desde el inicio hacia atrás, así que una curva dibujada al revés no encuentra su tiro.">
+         Dar vuelta el sentido <span style="color:var(--dim)">V</span></button>
+     </div>`) +
+    (T.alisada ? `<div style="color:var(--dim);font-size:11px;margin-top:8px;line-height:1.5">
+        Alisada: sus puntos salen de un ajuste, así que <b>tortuosidad y R² ya no
+        son evidencia</b> de su calidad. El alcance no cambió.</div>` : "");
   $("btnDesc").onclick = alternarDescarte;
+  $("btnAprob").onclick = alternarAprobada;
+  $("btnAlisar").onclick = () => alisarSeleccionada(false);
+  $("btnEnderezar").onclick = () => alisarSeleccionada(true);
+  const bv = $("btnVuelta");                  // solo esta en las dibujadas
+  if (bv) bv.onclick = darVuelta;
 }
 
-// La distancia que de verdad voló la roca: del tiro de origen al último punto
-// visible. Solo se puede dar si la trayectoria está asociada, por eso aparece
-// y desaparece del panel según haya candidato.
+// EL ALCANCE: recta del tiro de origen al ULTIMO punto del trazo. Es a donde
+// llegó la roca, no cuánto recorrió: una parábola que sube mucho y cae al lado
+// de su pozo tiene alcance corto, y eso es justo lo que hay que reportar —el
+// riesgo es dónde cae—. El largo del vuelo es otra cosa y ya vive en la
+// tortuosidad.
+//
+// Se mide desde el POZO y no desde el inicio del trazo porque ese punto no es
+// donde nació la roca, es donde la cámara la vio por primera vez: el destello y
+// el humo tapan el arranque. Está medido — el retardo entre la detonación y el
+// nacimiento de la traza tiene mediana de 50 frames (1.7 s), y una roca a
+// 30 m/s recorre 50 m en ese tiempo. El tramo que falta es justo el empalme
+// punteado que se dibuja hasta el pozo, así que la recta lo incluye entero.
+//
+// px -> m con la escala global de la homografía. Acá es exacta: la matriz de
+// estos casos es afín (fila proyectiva [0,0,1]) y su anisotropía medida es
+// 1.03, o sea menos de 1.5% según la dirección. Si algún día la calibración
+// deja de ser afín, esto hay que pasarlo por `pxAMundo`.
+//
+// Una sola función para las tres lecturas —el panel, el entregable y el
+// histograma— porque la fórmula estaba copiada en dos sitios y podían
+// separarse sin que nadie lo notara.
+function alcanceDesde(T, iPozo){
+  if (iPozo == null || iPozo < 0) return null;
+  const q = C.malla.pozos[iPozo];
+  if (!q || !T.pf) return null;
+  return Math.hypot(T.pf.x - q.px, T.pf.y - q.py) / (C.calibra.escala_px_por_m || 1);
+}
+
+// Solo se puede dar si la trayectoria está asociada, por eso aparece y
+// desaparece del panel según haya candidato.
 function distanciaDesdePozo(T){
   if (!A.activo || T.estado !== "activa") return "";
+  // La MISMA regla que `refrescarAsoc`, `panelCandidatos` y el entregable: bajo
+  // `nMin` puntos la tangente inicial no es confiable y no se asocia. Sin esto
+  // el panel mostraba «desde el tiro 821 — 47.9 m» justo encima de su propio
+  // aviso «Sin asociar: 3 puntos» — 101 trayectorias del caso de prueba.
+  if (!T.bezier && T.n < A.nMin) return "";
   const cand = asociar(T);
   if (!cand.length) return "";
   const q = C.malla.pozos[cand[0].i];
-  const d = Math.hypot(T.pf.x - q.px, T.pf.y - q.py) / (C.calibra.escala_px_por_m || 1);
+  const d = alcanceDesde(T, cand[0].i);
   return `<div class="par"><span>desde el tiro ${q.id}</span>`
        + `<b style="color:#7bd88f">${d.toFixed(1)} m</b></div>`;
 }
@@ -2516,6 +3028,7 @@ function atrapadas(poly, tocar, restaurar){
   if (poly.length < 3) return [];
   const caja = cajaDe(poly);
   const res = [];
+  let protegidas = 0;
   for (let i = 0; i < C.proyecciones.length; i++){
     const T = C.proyecciones[i];
     // Restaurando se busca lo descartado; descartando, lo que se ve.
@@ -2524,6 +3037,20 @@ function atrapadas(poly, tocar, restaurar){
     } else {
       if (T.estado === "descartada") continue;
     }
+    // No se puede descartar lo que no se esta viendo: con la lupa en
+    // "aprobadas", un lazo no debe llevarse por delante el lienzo que quedo
+    // escondido detras.
+    if (!pasaLupa(T)) continue;
+    // LO APROBADO NO SE LO LLEVA UN LAZO. Es la misma garantia que ya tenian
+    // los filtros —«una aprobada no puede escaparse de la pantalla por mover un
+    // slider»— y que aca faltaba: aprobar significa que una persona miro esa
+    // trayectoria entera y se la lleva, y una herramienta de masa no puede
+    // deshacer eso de refilon. Para sacarla hay que seleccionarla y descartarla
+    // a mano, que es explicito y reversible.
+    //
+    // Restaurando SI se tocan: devolver a la vida una aprobada que se descarto
+    // no le quita nada a nadie.
+    if (!restaurar && T.aprobada){ protegidas++; continue; }
     const b = T.bb;
     if (b.x1 < caja.x0 || b.x0 > caja.x1 || b.y1 < caja.y0 || b.y0 > caja.y1) continue;
     // Para exigir la trayectoria entera, que su caja no quepa en la del lazo ya
@@ -2544,6 +3071,10 @@ function atrapadas(poly, tocar, restaurar){
     }
     if (tocar ? alguno : todos) res.push(i);
   }
+  // Cuantas aprobadas cayeron dentro del lazo y se respetaron. Viaja pegada al
+  // arreglo, como hace `asociar` con `fiable`: el lazo tiene que poder decirlo,
+  // o el usuario cree que la herramienta no agarro nada.
+  res.protegidas = protegidas;
   return res;
 }
 
@@ -2662,6 +3193,13 @@ function aplicarLazo(){
     registrar(`${LAZO.restaurar ? "restaurar" : "descartar"} ${idx.length} con lazo`,
               () => { volcarCampos(antes, ["estado", "razon"]); U.sel = selAntes; });
   recalcular(); verDetalle(); dibujar();
+  // Solo se avisa cuando hubo algo que respetar: un aviso en cada lazo seria
+  // ruido, y callarlo cuando el lazo agarro tres y dejo dos se lee como que la
+  // herramienta falla.
+  if (idx.protegidas)
+    avisar(idx.length
+      ? `Descartadas ${idx.length} · ${idx.protegidas} aprobada${idx.protegidas > 1 ? "s" : ""} quedaron intactas`
+      : `El lazo solo agarro aprobadas (${idx.protegidas}): no se toco ninguna`);
   return idx.length;
 }
 
@@ -2740,6 +3278,7 @@ function aplicarRecorte(){
   const poly = LAZO.pts;
   const caja = cajaDe(poly);
   const nuevas = [], tocadas = [];
+  let protegidas = 0;
 
   for (let i = 0; i < C.proyecciones.length; i++){
     const T = C.proyecciones[i];
@@ -2749,6 +3288,16 @@ function aplicarRecorte(){
     // activa y exenta de filtros, asi que aparecia en pantalla una traza nueva
     // que no estaba antes del lazo—.
     if (T.estado !== "activa" || !T.puntos || T.n < 2) continue;
+    // Solo lo que se esta VIENDO. Sin esto, recortar con una trayectoria
+    // aislada le pasaba la tijera tambien a todas las que el aislamiento tenia
+    // escondidas detras: el usuario recortaba una punta y sin saberlo mutilaba
+    // media pantalla.
+    if (!pasaLupa(T)) continue;
+    // LO APROBADO NO SE RECORTA EN MASA, igual que no se lo lleva un lazo. Aca
+    // pesa todavia mas: el recorte DESCARTA la original y crea otra con un id
+    // nuevo (`Xr`), asi que no solo le quita la aprobacion — la reemplaza por
+    // una trayectoria distinta, que ya no es la que la persona reviso.
+    if (T.aprobada){ protegidas++; continue; }
     // Descarte rapido por caja: sin esto se evaluan miles de poligonos contra
     // trazas que ni se acercan.
     if (T.bb.x1 < caja.x0 || T.bb.x0 > caja.x1 ||
@@ -2775,9 +3324,18 @@ function aplicarRecorte(){
   const antes = copiaCampos(tocadas.map(T => C.proyecciones.indexOf(T)),
                             ["estado", "razon"]);
   const selAntes = U.sel;
+  const aisladaAntes = F.aislada;
   for (const T of tocadas){ T.estado = "descartada"; T.razon = "recortada"; }
   for (const T of nuevas) C.proyecciones.push(T);
   U.sel = nuevas.length === 1 ? C.proyecciones.indexOf(nuevas[0]) : -1;
+
+  // El recorte no modifica una trayectoria: descarta la original y crea otra,
+  // con un id nuevo (`Xr`). Si habia una aislada y era justo esa, el
+  // aislamiento se quedaba apuntando al id viejo —que ahora esta descartado— y
+  // la pantalla quedaba vacia: exactamente igual a haber borrado la trayectoria
+  // entera. El aislamiento tiene que seguir a la que la reemplaza.
+  const heredera = nuevas.find(T => T.recorte_de === aisladaAntes);
+  if (aisladaAntes != null && heredera) F.aislada = heredera.id;
 
   registrar(`recortar ${tocadas.length} trayectoria${tocadas.length>1?"s":""}`,
             () => {
@@ -2787,13 +3345,19 @@ function aplicarRecorte(){
               }
               volcarCampos(antes, ["estado", "razon"]);
               U.sel = selAntes;
+              F.aislada = aisladaAntes;
+              pintarAislada();
             });
 
   LAZO.pts = []; LAZO.n = 0;
   recalcular(); refrescarAsoc(); resumenAsoc(); verDetalle(); dibujar();
+  const intactas = protegidas
+    ? ` · ${protegidas} aprobada${protegidas > 1 ? "s" : ""} quedaron intactas` : "";
   avisar(nuevas.length
-    ? `Recortadas ${tocadas.length}: quedan ${nuevas.length} trayectorias`
-    : `Descartadas ${tocadas.length} (el lazo se las llevo enteras)`);
+    ? `Recortadas ${tocadas.length}: quedan ${nuevas.length} trayectorias${intactas}`
+    : tocadas.length
+      ? `Descartadas ${tocadas.length} (el lazo se las llevo enteras)${intactas}`
+      : `El lazo solo agarro aprobadas (${protegidas}): no se recorto ninguna`);
   return tocadas.length;
 }
 
@@ -2817,17 +3381,395 @@ function recortada(orig, puntos, frames){
     puntos, frames,
     t_ini: frames ? frames[0] : null,
     t_fin: frames ? frames[frames.length-1] : null,
+    // Punto de partida: `reMedirGeometria` la recalcula abajo sobre lo que
+    // quedo. Importa de verdad — recortarle la punta a una «Fuera de vista» le
+    // quita justo el tramo por el que lo era.
     clasificacion: orig.clasificacion,
     distancia_m: +(cuerda / esc).toFixed(2),
-    // Tortuosidad se recalcula exacta sobre lo que quedo. Las otras dos salen
-    // del ajuste del pipeline y no se pueden rehacer aca, asi que se heredan.
+    // Tortuosidad y escape se recalculan exactos sobre lo que quedo —el escape
+    // es pura geometria contra el poligono de origen, `escapeRelativoDe` hace
+    // lo mismo que el nodo del pipeline—. El R2 sale del ajuste del tracker y
+    // no se puede rehacer aca, asi que se hereda.
     tortuosidad: cuerda > 1e-6 ? +(largo / cuerda).toFixed(3) : 1,
     escape_relativo: orig.escape_relativo,
     r2_score: orig.r2_score,
     estado: "activa", razon: null, asociacion: null,
   };
   preparar(T);
+  reMedirGeometria(T);
   return T;
+}
+
+// ===========================================================================
+//  Alisar: dejar el vuelo como la fisica manda
+// ===========================================================================
+//
+// El zigzag fino de una traza NO es fisica: es el centroide del blob saltando
+// unos pixeles entre frames. La fisica de una roca en vuelo libre es suave, y
+// desde una camara cenital tiene ademas una curvatura leve —el propio codigo lo
+// dice en `tangenteInicial`: "mas alla la curvatura balistica ya sesga la
+// recta"—.
+//
+// Por eso NO se suaviza la geometria (una spline sobre los puntos quedaria
+// bonita y seria una mentira: maquilla el entregable sin modelo detras). Se
+// ajusta el movimiento EN EL TIEMPO: cada punto trae su frame, asi que x(t) e
+// y(t) se ajustan por minimos cuadrados con un polinomio de grado 2 —o sea
+// aceleracion constante, que es exactamente el modelo del vuelo— y los puntos
+// se reproyectan sobre esa curva. Eso se puede escribir en un informe.
+//
+// Son dos defectos distintos y necesitan dos pasadas:
+//   zigzag fino   ruido de alta frecuencia   lo mata el ajuste
+//   UN quiebre    un punto saltado (outlier) el ajuste solo lo REPARTE
+// De ahi que los outliers se detecten y se saquen del ajuste antes de resolver.
+// No se borran del trazo: se reproyectan como el resto, o sea vuelven a su
+// lugar en vez de dejar un hueco en el muestreo temporal.
+
+// Minimos cuadrados por ecuaciones normales, con `t` normalizado a [0,1] para
+// que la matriz no se degenere con frames grandes.
+function ajustePoli(ts, vs, grado){
+  const n = ts.length, m = grado + 1;
+  const A = Array.from({ length: m }, () => new Float64Array(m + 1));
+  for (let k = 0; k < n; k++){
+    const pot = [1];
+    for (let j = 1; j < 2 * grado + 1; j++) pot.push(pot[j - 1] * ts[k]);
+    for (let i = 0; i < m; i++){
+      for (let j = 0; j < m; j++) A[i][j] += pot[i + j];
+      A[i][m] += pot[i] * vs[k];
+    }
+  }
+  // Gauss con pivoteo parcial.
+  for (let i = 0; i < m; i++){
+    let piv = i;
+    for (let r = i + 1; r < m; r++) if (Math.abs(A[r][i]) > Math.abs(A[piv][i])) piv = r;
+    if (Math.abs(A[piv][i]) < 1e-12) return null;      // sistema degenerado
+    if (piv !== i){ const tmp = A[i]; A[i] = A[piv]; A[piv] = tmp; }
+    for (let r = 0; r < m; r++){
+      if (r === i) continue;
+      const f = A[r][i] / A[i][i];
+      for (let c = i; c <= m; c++) A[r][c] -= f * A[i][c];
+    }
+  }
+  return Array.from({ length: m }, (_, i) => A[i][m] / A[i][i]);
+}
+
+const evalPoli = (co, t) => co.reduce((acc, c, i) => acc + c * Math.pow(t, i), 0);
+
+// Alisado LOCAL (Savitzky-Golay): quita el glitter sin tocar la forma.
+//
+// Por que no sirve el ajuste global de `puntosAlisados` para esto: una parabola
+// unica no puede representar una traza que sale curva de la explosion y despues
+// se va recta, ni una que va y vuelve por el paralaje. Ante una forma que no
+// puede representar, el ajuste no la sigue: la TIRA hacia lo que si puede, y
+// deforma. Medido sobre formas sinteticas con 2 px de ruido, el ajuste global
+// metia 43 y 47 px de error propio — veinte veces mas del que venia a quitar.
+//
+// Aca cada punto se ajusta con sus vecinos inmediatos, no con toda la
+// trayectoria. Eso quita el ruido de alta frecuencia (que es lo unico que se
+// quiere sacar) y respeta la curvatura variable y el vertice, porque el modelo
+// nunca tiene que explicar mas que un pedacito.
+//
+// Y los extremos van ANCLADOS: el alisado no puede cambiar donde empieza ni
+// donde termina la traza. Es una garantia dura, y es la que hace que se pueda
+// confiar en el —el alcance despues de alisar es exactamente el de antes—.
+function suavizadoLocal(T, intensidad, ventana){
+  const p = T.puntos, n = T.n;
+  if (!p || n < 5) return null;
+
+  const crudo = (T.frames && T.frames.length === n)
+    ? T.frames.map(Number) : Array.from({ length: n }, (_, i) => i);
+  const xs = [], ys = [];
+  for (let i = 0; i < n; i++){ xs.push(p[2*i]); ys.push(p[2*i+1]); }
+
+  // Ventana impar y nunca mayor que la propia trayectoria. Chica a proposito:
+  // 7 puntos alcanzan para promediar el jitter y son pocos para que la forma
+  // cambie dentro de ellos.
+  let w = Math.min(ventana | 0 || 7, n % 2 ? n : n - 1);
+  if (w % 2 === 0) w--;
+  if (w < 5) return { puntos: p.slice(), movMax: 0, corregidos: 0 };
+  const mitad = w >> 1;
+
+  const base = (serie) => {
+    const out = new Array(n);
+    for (let i = 0; i < n; i++){
+      // Cerca del borde la ventana se corre en vez de encogerse: mantiene el
+      // mismo soporte y evita que los extremos queden mas ruidosos que el resto.
+      const ini = Math.max(0, Math.min(i - mitad, n - w));
+      const ts = [], vs = [];
+      for (let k = ini; k < ini + w; k++){ ts.push(crudo[k] - crudo[i]); vs.push(serie[k]); }
+      const co = ajustePoli(ts, vs, 2);
+      out[i] = co ? co[0] : serie[i];          // el polinomio local en t_i
+    }
+    return out;
+  };
+
+  let bx = base(xs), by = base(ys);
+
+  // Un punto saltado se detecta contra la MEDIANA movil, no contra el ajuste.
+  // La razon es que el ajuste por minimos cuadrados de una ventana que CONTIENE
+  // al punto malo se va detras de el: la vecindad entera queda desplazada, y
+  // entonces el outlier parece pequeno mientras sus siete vecinos parecen
+  // outliers. La mediana, en cambio, lo ignora por construccion — un valor
+  // extremo no mueve la mediana de su ventana.
+  // Se compara cada punto con la interpolacion entre sus DOS VECINOS INMEDIATOS,
+  // no con una ventana ancha. En una traza que avanza decenas de pixeles por
+  // cuadro, cualquier estadistico de ventana ancha queda lejos del punto central
+  // por la pura tendencia —la mediana movil marcaba la trayectoria entera como
+  // saltada— mientras que entre vecinos contiguos la tendencia casi no alcanza a
+  // cambiar: lo que sobresale ahi es curvatura local o un salto de verdad.
+  const res = xs.map((_, i) => {
+    if (i === 0 || i === n - 1) return 0;
+    const u = (crudo[i] - crudo[i-1]) / ((crudo[i+1] - crudo[i-1]) || 1);
+    return Math.hypot(xs[i] - (xs[i-1] + u * (xs[i+1] - xs[i-1])),
+                      ys[i] - (ys[i-1] + u * (ys[i+1] - ys[i-1])));
+  });
+  const orden = [...res].sort((a, b) => a - b);
+  const med = orden[n >> 1];
+  const mad = [...res].map(r => Math.abs(r - med)).sort((a, b) => a - b)[n >> 1];
+  const umbral = Math.max(med + 6 * mad * 1.4826, 8);
+
+  // Al punto malo se le pone lo que dicen sus vecinos BUENOS, interpolando en el
+  // tiempo. Se prefiere eso a la mediana porque respeta la pendiente local: en
+  // una curva, la mediana de la ventana esta sistematicamente por dentro.
+  // Solo los MAXIMOS locales. Un punto saltado ensucia tambien la medicion de
+  // sus dos vecinos —los tres se miran entre si—, y sin esto un unico salto se
+  // reportaba como "3 puntos corregidos", que es justo el tipo de numero que
+  // hace desconfiar de la herramienta.
+  let corregidos = 0;
+  const malo = res.map((r, i) =>
+    r > umbral && r >= (res[i-1] ?? 0) && r >= (res[i+1] ?? 0));
+  const xs2 = xs.slice(), ys2 = ys.slice();
+  for (let i = 0; i < n; i++){
+    if (!malo[i]) continue;
+    let a1 = i - 1; while (a1 >= 0 && malo[a1]) a1--;
+    let b1 = i + 1; while (b1 < n && malo[b1]) b1++;
+    if (a1 < 0 || b1 >= n){ xs2[i] = bx[i]; ys2[i] = by[i]; corregidos++; continue; }
+    const u = (crudo[i] - crudo[a1]) / ((crudo[b1] - crudo[a1]) || 1);
+    xs2[i] = xs[a1] + u * (xs[b1] - xs[a1]);
+    ys2[i] = ys[a1] + u * (ys[b1] - ys[a1]);
+    corregidos++;
+  }
+  if (corregidos){ bx = base(xs2); by = base(ys2); }
+
+  const a = Math.max(0, Math.min(1, intensidad));
+  const out = new Array(2 * n);
+  let movMax = 0;
+  for (let i = 0; i < n; i++){
+    // Extremos anclados: el alcance no se toca.
+    const anclado = (i === 0 || i === n - 1);
+    out[2*i]   = anclado ? xs[i] : xs2[i] + a * (bx[i] - xs2[i]);
+    out[2*i+1] = anclado ? ys[i] : ys2[i] + a * (by[i] - ys2[i]);
+    movMax = Math.max(movMax, Math.hypot(out[2*i] - xs[i], out[2*i+1] - ys[i]));
+  }
+  return { puntos: out, movMax, corregidos };
+}
+
+// Devuelve los puntos alisados, o null si no hay con que.
+function puntosAlisados(T, intensidad){
+  const p = T.puntos, n = T.n;
+  if (!p || n < 4) return null;
+
+  // El eje es el TIEMPO cuando se conoce (frames del tracker) y el indice
+  // cuando no (trazos dibujados a mano). Con frames el ajuste respeta que la
+  // roca no recorre lo mismo en cada intervalo; con indice asume muestreo
+  // parejo, que para un trazo dibujado es exactamente lo que es.
+  const crudo = (T.frames && T.frames.length === n)
+    ? T.frames.map(Number) : Array.from({ length: n }, (_, i) => i);
+  const t0 = crudo[0], span = (crudo[n - 1] - t0) || 1;
+  const ts = crudo.map(v => (v - t0) / span);
+  const xs = [], ys = [];
+  for (let i = 0; i < n; i++){ xs.push(p[2*i]); ys.push(p[2*i+1]); }
+
+  // Grado 2 pide al menos 4 puntos para no interpolar el ruido; con menos, una
+  // recta es lo unico honesto.
+  const grado = n >= 6 ? 2 : 1;
+
+  let cx = ajustePoli(ts, xs, grado), cy = ajustePoli(ts, ys, grado);
+  if (!cx || !cy) return null;
+
+  // Pasada 2: fuera los outliers y se reajusta. El umbral sale de la MAD y no
+  // de la media, porque justo lo que se busca es un punto que reventaria
+  // cualquier estadistico sensible a el.
+  const res = ts.map((t, i) => Math.hypot(xs[i] - evalPoli(cx, t), ys[i] - evalPoli(cy, t)));
+  const orden = [...res].sort((a, b) => a - b);
+  const med = orden[orden.length >> 1];
+  const desv = [...res].map(r => Math.abs(r - med)).sort((a, b) => a - b)[res.length >> 1];
+  // Piso de medio pixel: por debajo de eso no hay outlier que valga, es el
+  // redondeo del propio ajuste. Sin el, una trayectoria ya perfecta reportaba
+  // "2 puntos fuera de modelo" que no existian.
+  const umbral = Math.max(med + 3 * desv * 1.4826, 0.5);
+  const buenos = res.map((r, i) => r <= umbral ? i : -1).filter(i => i >= 0);
+  if (buenos.length >= grado + 2 && buenos.length < n){
+    const cx2 = ajustePoli(buenos.map(i => ts[i]), buenos.map(i => xs[i]), grado);
+    const cy2 = ajustePoli(buenos.map(i => ts[i]), buenos.map(i => ys[i]), grado);
+    if (cx2 && cy2){ cx = cx2; cy = cy2; }
+  }
+
+  // Reproyeccion con mezcla: a intensidad 1 el trazo queda sobre la curva; en
+  // medio, a mitad de camino. Los outliers vuelven a la curva como todos: no se
+  // borran, se corrigen.
+  const a = Math.max(0, Math.min(1, intensidad));
+  const out = new Array(2 * n);
+  let movMax = 0;
+  for (let i = 0; i < n; i++){
+    out[2*i]   = xs[i] + a * (evalPoli(cx, ts[i]) - xs[i]);
+    out[2*i+1] = ys[i] + a * (evalPoli(cy, ts[i]) - ys[i]);
+    movMax = Math.max(movMax, Math.hypot(out[2*i] - xs[i], out[2*i+1] - ys[i]));
+  }
+
+  // Cuanto del trazo explica el modelo. NO se usa para bloquear: probado sobre
+  // las 3.742 del caso v9, ningun umbral separa las que mejoran de las que
+  // empeoran —se solapan— y la mitad de ese caso es humo, que no es un vuelo y
+  // no tiene por que ajustar. Pero el numero SI se le muestra al usuario: es lo
+  // que le dice si el modelo le calzo a ESTA trayectoria, que es justo la
+  // decision que el toma mirando la pantalla.
+  let ssRes = 0, ssTot = 0, mx = 0, my = 0;
+  for (let i = 0; i < n; i++){ mx += xs[i]; my += ys[i]; }
+  mx /= n; my /= n;
+  for (let i = 0; i < n; i++){
+    ssRes += Math.pow(xs[i] - evalPoli(cx, ts[i]), 2) + Math.pow(ys[i] - evalPoli(cy, ts[i]), 2);
+    ssTot += Math.pow(xs[i] - mx, 2) + Math.pow(ys[i] - my, 2);
+  }
+  const r2 = ssTot > 0 ? 1 - ssRes / ssTot : 1;
+
+  return { puntos: out, quitados: n - buenos.length, grado, r2, movMax };
+}
+
+// Alisar NO aprueba: se alisa, se mira, y recien ahi se aprueba o se deshace.
+// Es una decision explicita de Carlos — el alisado puede quedar mal y Ctrl+Z
+// tiene que ser el camino corto.
+// `global` = enderezar contra el modelo balistico de toda la traza. Por defecto
+// NO: se quita el glitter y se respeta la forma, que es lo que uno espera de un
+// boton llamado "alisar". Enderezar es otra cosa y va en su propio boton.
+function alisarSeleccionada(global){
+  if (U.sel < 0) return;
+  const T = C.proyecciones[U.sel];
+  if (T.bezier){ avisar("Una curva dibujada a mano ya es suave: se ajusta con sus nodos"); return; }
+
+  const r = global ? puntosAlisados(T, ALISADO.fuerza)
+                   : suavizadoLocal(T, ALISADO.fuerza, 7);
+  if (!r){ avisar(`Muy pocos puntos para ${global ? "enderezar" : "alisar"} (hacen falta ${global ? 4 : 5})`); return; }
+
+  const antes = { puntos: T.puntos, tortuosidad: T.tortuosidad,
+                  distancia_m: T.distancia_m, alisada: T.alisada,
+                  enderezada: T.enderezada };
+  T.puntos = r.puntos;
+  T.alisada = (T.alisada || 0) + 1;
+  if (global) T.enderezada = (T.enderezada || 0) + 1;
+  remedirTrazo(T);
+  preparar(T);
+
+  registrar("alisar trayectoria", () => {
+    T.puntos = antes.puntos;
+    T.tortuosidad = antes.tortuosidad;
+    T.distancia_m = antes.distancia_m;
+    T.alisada = antes.alisada;
+    T.enderezada = antes.enderezada;
+    preparar(T);
+  });
+  recalcular(); verDetalle();
+
+  // El aviso dice lo que hizo Y cuanto se fio de si mismo. Un R2 bajo con un
+  // desplazamiento grande es la senal de "esto no era un vuelo balistico":
+  // Ctrl+Z esta a un paso y la decision es del que mira.
+  const corr = global ? r.quitados : r.corregidos;
+  const partes = [global ? "Enderezada" : "Alisada"];
+  if (corr) partes.push(`${corr} punto${corr>1?"s":""} saltado${corr>1?"s":""} corregido${corr>1?"s":""}`);
+  if (global) partes.push(`el modelo explica ${(r.r2*100).toFixed(0)}%`);
+  else partes.push("extremos y alcance intactos");
+  if (r.movMax > 25) partes.push(`⚠ movió el trazo hasta ${r.movMax.toFixed(0)} px`);
+  avisar(partes.join(" · "));
+}
+
+// Tras mover los puntos, las metricas que se pueden recalcular exactas se
+// recalculan; las que salen del pipeline se quedan como estaban porque no hay
+// con que rehacerlas aca. Es el mismo criterio que usa `recortada()`.
+function remedirTrazo(T){
+  const p = T.puntos, esc = C.calibra.escala_px_por_m || 1;
+  let largo = 0;
+  for (let k = 2; k < p.length; k += 2)
+    largo += Math.hypot(p[k] - p[k-2], p[k+1] - p[k-1]);
+  const cuerda = Math.hypot(p[p.length-2] - p[0], p[p.length-1] - p[1]);
+  T.tortuosidad = cuerda > 1e-6 ? +(largo / cuerda).toFixed(3) : 1;
+  T.distancia_m = +(cuerda / esc).toFixed(2);
+  reMedirGeometria(T);
+}
+
+// Lo que depende de POR DONDE PASA y DONDE TERMINA el trazo, y que por tanto
+// cambia con cualquier edicion. Vive en una sola funcion para que agregar otra
+// herramienta que toque puntos no obligue a acordarse de dos calculos.
+//
+// Antes no se rehacia ninguno de los dos: una unida heredaba la clase del tramo
+// que terminaba ultimo, una recortada la de la original —aunque el recorte le
+// quitara justo la punta que la sacaba del cuadro— y una dibujada nacia
+// «Proyeccion» fija, cayera donde cayera. La clase manda en el color, en el
+// filtro por clase, en la censura del histograma y en el entregable.
+//
+// Si falta la geometria para decidir (un caso sin zona de seguridad, o sin
+// tamaño de cuadro) se deja lo que hubiera: mejor heredar que inventar.
+function reMedirGeometria(T){
+  const clase = clasificarDe(T);
+  if (clase) T.clasificacion = clase;
+  const esc_rel = escapeRelativoDe(T);
+  if (esc_rel != null) T.escape_relativo = esc_rel;
+}
+
+// Aprobar es un acto EXPLICITO y unitario: "esta trayectoria, de punta a punta,
+// me la llevo". No lo hace un filtro, no lo hace el alisado y no lo hace el
+// lazo — esos son herramientas de eliminar. Por eso vive en una sola tecla
+// sobre la seleccionada.
+function alternarAprobada(){
+  if (U.sel < 0) return;
+  const T = C.proyecciones[U.sel];
+  const antes = copiaCampos([U.sel], ["aprobada", "estado", "razon"]);
+  const volvia = !!T.aprobada;
+  T.aprobada = !volvia;
+  // Aprobar rescata: si un filtro la tenia oculta y aun asi la aprobaste, es
+  // porque la viste y la quieres. Lo contrario —dejarla oculta tras aprobarla—
+  // seria aceptar una decision y no mostrarla.
+  if (T.aprobada && T.estado === "oculta"){ T.estado = "activa"; T.razon = null; }
+  registrar(volvia ? "desaprobar trayectoria" : "aprobar trayectoria",
+            () => volcarCampos(antes, ["aprobada", "estado", "razon"]));
+  recalcular(); verDetalle();
+}
+
+// La cosecha: "ya tengo suficientes, chao todo lo demas".
+//
+// Opera SOLO sobre lo que esta en pantalla. Lo que un filtro tiene oculto no se
+// toca —ni se aprueba ni se descarta—: descartar a ciegas lo que el usuario no
+// estaba mirando es la unica forma que tiene esta pantalla de destruir trabajo
+// sin que nadie lo vea.
+function cosechar(){
+  const idx = [];
+  for (let i = 0; i < C.proyecciones.length; i++){
+    const T = C.proyecciones[i];
+    if (T.estado === "activa" && !T.aprobada) idx.push(i);
+  }
+  const aprobadas = C.proyecciones.filter(esAprobada).length;
+  if (!idx.length){ avisar("No queda lienzo en pantalla: todo lo visible ya esta aprobado"); return; }
+  if (!aprobadas && !confirm(
+        `No hay ninguna trayectoria aprobada todavia.
+
+`
+      + `Esto descartaria las ${idx.length} que estan en pantalla y te dejaria sin nada. `
+      + `¿Seguro?`)) return;
+  if (aprobadas && !confirm(
+        `Descartar ${idx.length} trayectorias del lienzo y quedarte con las `
+      + `${aprobadas} aprobadas.
+
+Lo que un filtro tiene oculto no se toca. `
+      + `Se puede deshacer con Ctrl+Z.`)) return;
+
+  const antes = copiaCampos(idx, ["estado", "razon"]);
+  const selAntes = U.sel;
+  for (const i of idx){
+    C.proyecciones[i].estado = "descartada";
+    C.proyecciones[i].razon = "cosecha";
+  }
+  if (U.sel >= 0 && idx.includes(U.sel)) U.sel = -1;
+  registrar(`cosechar (descartar ${idx.length} del lienzo)`,
+            () => { volcarCampos(antes, ["estado", "razon"]); U.sel = selAntes; });
+  recalcular(); verDetalle();
+  avisar(`Cosechadas ${aprobadas} · descartadas ${idx.length}`);
 }
 
 function alternarDescarte(){
@@ -2947,22 +3889,25 @@ function unirTrayectorias(iA, iB){
     t_ini: frames ? frames[0] : null,
     t_fin: frames ? frames[frames.length - 1] : null,
     // La clasificación depende de DÓNDE TERMINA la roca (dentro del área, fuera,
-    // o saliéndose del cuadro), así que manda la del tramo que termina último.
-    // No es siempre el que empieza último: con tramos solapados, el que nace
-    // después puede apagarse antes.
+    // o saliéndose del cuadro), así que este es el punto de partida: la del
+    // tramo que termina último —no es siempre el que empieza último: con tramos
+    // solapados, el que nace después puede apagarse antes—. `reMedirGeometria`
+    // la recalcula abajo sobre la polilínea unida, que es lo correcto: el final
+    // del vuelo unido puede no ser el final de ninguno de los dos tramos.
     clasificacion: (pri.t_fin != null && seg.t_fin != null && pri.t_fin > seg.t_fin)
       ? pri.clasificacion : seg.clasificacion,
     distancia_m: +(cuerda / esc).toFixed(2),
-    // Tortuosidad se recalcula exacta sobre la polilínea unida. Las otras dos no
-    // se pueden recalcular acá sin rehacer el ajuste del pipeline, así que se
-    // toma el valor conservador de cada una: la unión llega al menos tan lejos
-    // como el tramo que más se aleja, y no ajusta mejor que el peor de los dos.
+    // Tortuosidad y escape se recalculan exactos sobre la polilínea unida; el
+    // escape incluye ahora el tramo RECONSTRUIDO, que es parte del vuelo. El R²
+    // no se puede rehacer sin repetir el ajuste del pipeline, así que se toma
+    // el valor conservador: la unión no ajusta mejor que el peor de los dos.
     tortuosidad: cuerda > 1e-6 ? +(largo / cuerda).toFixed(3) : 1,
     escape_relativo: Math.max(pri.escape_relativo || 0, seg.escape_relativo || 0),
     r2_score: Math.min(pri.r2_score ?? 1, seg.r2_score ?? 1),
     estado: "activa", razon: null, asociacion: null,
   };
   preparar(T);
+  reMedirGeometria(T);
 
   // Los dos tramos NO se borran: quedan descartados con su razón. Así el JSON
   // sigue contando la historia completa y la unión se puede deshacer a mano.
@@ -2984,10 +3929,58 @@ function invertir(T){
   for (let k = p.length - 2; k >= 0; k -= 2) r.push(p[k], p[k+1]);
   T.puntos = r;
   if (T.frames) T.frames = T.frames.slice().reverse();
+  // La Bezier MANDA sobre los puntos: `tangenteInicial` la lee a ella cuando
+  // existe, y `rasterizar` vuelve a pisar `puntos` en cuanto alguien mueve un
+  // tirador. Dar vuelta solo los puntos dejaba la curva igual que antes y la
+  // tangente apuntando al reves — o sea, no daba vuelta nada.
+  if (T.bezier){
+    const B = T.bezier;
+    T.bezier = { p0: { ...B.p2 }, p2: { ...B.p0 },
+                 c1: { ...(B.c2 || B.c1) }, c2: B.c2 ? { ...B.c1 } : null };
+  }
+  // El tramo reconstruido de una union queda en el otro extremo de la lista.
+  if (T.empalme){
+    const n = T.puntos.length >> 1;
+    T.empalme = { ...T.empalme, i0: n - 1 - T.empalme.i1, i1: n - 1 - T.empalme.i0 };
+  }
   preparar(T);
 }
 
+// Dar vuelta el sentido de un trazo. El sentido IMPORTA: la asociacion al pozo
+// sale de la tangente INICIAL proyectada hacia atras, asi que una trayectoria
+// dibujada al reves busca su origen en la direccion contraria y se queda sin
+// pozo. Medido sobre `casos/3160-789`: la misma curva se asocia dibujada en el
+// sentido del vuelo y sale «sin pozo detras» invertida. Antes no habia forma de
+// arreglarlo salvo borrarla y volver a dibujarla.
+//
+// Solo para trazos SIN eje temporal, o sea los dibujados a mano. Dar vuelta uno
+// que trae `frames` dejaria la lista de frames en orden descendente, y de ahi
+// salen `t_ini`, el calce temporal y el orden de las uniones: seria mentir
+// sobre el tiempo para arreglar la geometria. Los del detector ademas vienen
+// bien por construccion —el tracker sigue al video—, asi que no hay caso.
+function darVuelta(){
+  if (U.sel < 0){ avisar("Selecciona la trayectoria que quieres dar vuelta"); return; }
+  const T = C.proyecciones[U.sel];
+  if (T.frames){
+    avisar("Solo se da vuelta un trazo dibujado: éste trae los tiempos del video");
+    return;
+  }
+  invertir(T);
+  registrar("dar vuelta la trayectoria", () => invertir(T));
+  recalcular(); refrescarAsoc(); resumenAsoc(); verDetalle(); dibujar();
+  const q = A.activo && A.mejor[U.sel] >= 0 ? C.malla.pozos[A.mejor[U.sel]] : null;
+  avisar(q ? `Sentido invertido — ahora sale del tiro ${q.id}`
+           : "Sentido invertido");
+}
+
 function alternarUnir(){
+  // Unir pide dos trayectorias y el aislamiento deja ver una: el segundo clic
+  // no encontraria nada y pareceria que la herramienta no responde.
+  if (!U.uniendo && F.aislada != null){
+    F.aislada = null;
+    pintarAislada();
+    avisar("Se solto el aislamiento: unir necesita ver las dos trayectorias");
+  }
   // Unir necesita una trayectoria ya elegida: es el primer tramo.
   if (!U.uniendo && U.sel < 0){
     alert("Primero selecciona una de las dos trayectorias y después activa Unir.");
@@ -3134,6 +4127,25 @@ $("selVel").addEventListener("change", e => {
   if (VID.el) VID.el.playbackRate = parseFloat(e.target.value);
 });
 
+$("selPintado").addEventListener("change", e => { U.pintado = e.target.value; dibujar(); });
+$("selLupa").addEventListener("change", e => {
+  // «Sin empalme» solo significa algo con la asociacion encendida: apagada no
+  // hay origen que falte, y la lupa dejaria la pantalla vacia sin explicar por que.
+  if (e.target.value === "sin_empalme" && !A.activo){
+    e.target.value = F.lupa;
+    avisar("Enciende «Asociar al pozo» para ver las que quedaron sin empalme");
+    return;
+  }
+  F.lupa = e.target.value;
+  dibujar();
+});
+$("fAlisado").addEventListener("input", e => {
+  ALISADO.fuerza = parseFloat(e.target.value);
+  $("vAlisado").textContent = ALISADO.fuerza.toFixed(2);
+});
+$("btnCosechar").addEventListener("click", cosechar);
+$("btnAislar").addEventListener("click", alternarAislada);
+
 $("btnMalla").addEventListener("click", e => {
   U.malla = !U.malla; e.target.classList.toggle("on", U.malla); dibujar();
 });
@@ -3229,12 +4241,18 @@ function alternarAsoc(){
 function resumenAsoc(){
   if (!A.activo) return;
   const P = C.proyecciones;
-  let conAsoc = 0, flojas = 0, cortas = 0;
+  let conAsoc = 0, flojas = 0, sinTotal = 0;
   const niveles = { pozo: 0, grupo: 0, sector: 0 };
+  const sin = {};                               // motivo -> cuantas
   for (let i = 0; i < P.length; i++){
     const T = P[i];
     if (T.estado !== "activa") continue;
-    if (A.mejor[i] < 0){ cortas++; continue; }
+    if (A.mejor[i] < 0){
+      const m = T.sin_empalme || "sin pozo detras";
+      sin[m] = (sin[m] || 0) + 1;
+      sinTotal++;
+      continue;
+    }
     conAsoc++;
     if (T.asociacion){
       niveles[T.asociacion.nivel]++;
@@ -3251,9 +4269,24 @@ function resumenAsoc(){
            + `<div class="cuenta total"><span class="lbl">Asociadas</span>
               <span class="n">${conAsoc}</span></div>`;
 
-  if (cortas)
-    html += `<div class="aviso-flojo">${cortas} sin asociar: menos de ${A.nMin}
-             puntos, la tangente inicial no es confiable.</div>`;
+  // Las que quedaron sin origen, con el motivo de cada una. Antes se contaban
+  // todas juntas y se les atribuia el mismo motivo («pocos puntos»), que es
+  // solo uno de los cuatro: el numero era correcto y la explicacion no.
+  if (sinTotal){
+    const texto = {
+      "pocos puntos":    `menos de ${A.nMin} puntos: la tangente inicial no es confiable`,
+      "sin tangente":    "el trazo no da una tangente inicial",
+      "sin pozo detras": "ningún pozo detrás del inicio del trazo",
+      "calce temporal":  "hay pozos detrás, pero el calce temporal los descarta",
+      "sin malla":       "el caso no trae malla de tiros",
+    };
+    html += `<div class="cuenta total" style="margin-top:9px">
+             <span class="lbl">Sin empalme</span><span class="n">${sinTotal}</span></div>`;
+    for (const [m, n] of Object.entries(sin).sort((a, b) => b[1] - a[1]))
+      html += `<div class="aviso-flojo">${n} · ${texto[m] || m}</div>`;
+    html += `<button class="mini" id="btnVerSinEmpalme" style="margin-top:8px;width:100%">
+             ${F.lupa === "sin_empalme" ? "Ver todas otra vez" : "Ver solo las sin empalme"}</button>`;
+  }
   if (A.temporal && A.hayTiempo)
     html += `<div style="color:var(--dim);font-size:11px;margin-top:8px;line-height:1.5">
              Calce temporal activo: se descartan los pozos que detonaron después
@@ -3279,6 +4312,15 @@ function resumenAsoc(){
   $("resAsoc").innerHTML = html;
   const b = $("btnLimpiarPozo");
   if (b) b.onclick = () => { A.pozoSel = -1; resumenAsoc(); dibujar(); };
+  const bs = $("btnVerSinEmpalme");
+  if (bs) bs.onclick = () => {
+    F.lupa = F.lupa === "sin_empalme" ? "todo" : "sin_empalme";
+    $("selLupa").value = F.lupa;
+    // El aislamiento gana sobre la lupa, asi que dejarlo puesto haria que el
+    // boton no mostrara nada y pareciera que no hay ninguna sin empalme.
+    F.aislada = null; pintarAislada();
+    resumenAsoc(); dibujar();
+  };
 }
 
 function alternarDibujo(){
@@ -3313,15 +4355,25 @@ window.addEventListener("keydown", (e) => {
     if (e.key === "Home"){ irAFrame(0); e.preventDefault(); return; }
   }
 
-  if (e.key === "Delete" || e.key === "Backspace"){ alternarDescarte(); e.preventDefault(); }
+  if (e.key === "Enter"){ alternarAprobada(); e.preventDefault(); }
+  else if (e.key === "s" || e.key === "S") alisarSeleccionada(e.shiftKey);
+  else if (e.key === "p" || e.key === "P"){
+    U.pintado = U.pintado === "clase" ? "trabajo" : "clase";
+    $("selPintado").value = U.pintado;
+    avisar(U.pintado === "clase" ? "Color por clase" : "Color por avance");
+    dibujar();
+  }
+  else if (e.key === "Delete" || e.key === "Backspace"){ alternarDescarte(); e.preventDefault(); }
   else if (e.key === "c" || e.key === "C") alternarGrado();
   else if (e.key === "d" || e.key === "D") alternarDibujo();
   else if (e.key === "a" || e.key === "A") alternarAsoc();
   else if (e.key === "l" || e.key === "L") alternarLazo();
   else if (e.key === "r" || e.key === "R") alternarRecorte();
   else if (e.key === "u" || e.key === "U") alternarUnir();
+  else if (e.key === "v" || e.key === "V") darVuelta();
   else if (e.key === "Escape"){
     NUEVO = null; U.sel = -1;
+    if (F.aislada != null){ F.aislada = null; pintarAislada(); }
     // Escape también aborta un lazo a medias y sale de los modos, que es lo que
     // uno intenta cuando se dio cuenta de que iba a agarrar lo que no era.
     LAZO.pts = []; LAZO.n = 0; arrastre = null;
@@ -3331,6 +4383,7 @@ window.addEventListener("keydown", (e) => {
                     document.body.classList.remove("uniendo"); }
     verDetalle(); dibujar();
   }
+  else if (e.key === "i" || e.key === "I") alternarAislada();
   else if (e.key === "f" || e.key === "F") ajustarVista();
 });
 
@@ -3360,7 +4413,7 @@ function pxAMundo(p){
 const r3 = (v) => (v == null || !isFinite(v)) ? null : +v.toFixed(3);
 
 function construirEntregable(){
-  const diam = C.zonas.diametro_equiv_m || 0;
+  const diam = C.zonas.diametro_equiv_m || 0;   // 0 = el job no trajo zona de origen
   const P = C.proyecciones;
   const porPozo = new Map();
 
@@ -3368,25 +4421,27 @@ function construirEntregable(){
     // Se asocia todo lo que no hayas descartado a mano, incluidas las que un
     // filtro tiene ocultas: si mañana alguien afloja el filtro, la trayectoria
     // ya trae su tiro de origen y no hay que recalcular nada.
-    const cand = (T.estado !== "descartada" && A.activo) ? asociar(T) : [];
+    //
+    // Con la MISMA regla que usa la pantalla (`refrescarAsoc`): bajo `nMin`
+    // puntos la tangente inicial no es confiable y no se asocia. Sin esto el
+    // archivo afirmaba un pozo para trayectorias que la vista se negaba a
+    // asociar, y las dos cifras no cuadraban —176 sin empalme en el panel
+    // contra 75 «sin asociar» en el JSON del mismo caso—.
+    const asociable = T.estado !== "descartada" && A.activo
+                   && (T.bezier || T.n >= A.nMin);
+    const cand = asociable ? asociar(T) : [];
     const pozo = cand.length ? C.malla.pozos[cand[0].i] : null;
 
     // Distancia MAXIMA fuera del area de voladura. Es la que se compara con el
     // radio de evacuacion: ese radio se mide desde la voladura, no desde donde
-    // nacio la roca. `escape_relativo` ya la trae, normalizada por el diametro.
-    const salida = (T.escape_relativo != null) ? T.escape_relativo * diam : null;
+    // nacio la roca. `escape_relativo` ya la trae, normalizada por el diametro,
+    // asi que sin diametro no hay metros: va null y no un cero que se lee como
+    // "esta roca no salio del area".
+    const salida = (diam && T.escape_relativo != null) ? T.escape_relativo * diam : null;
 
-    // Distancia REAL de vuelo: del tiro de origen al último punto visible.
-    //
-    // No se mide desde el inicio del trazo porque ese punto no es donde nació
-    // la roca, es donde la cámara la vio por primera vez: el destello y el humo
-    // tapan el arranque. Está medido — el retardo entre la detonación y el
-    // nacimiento de la traza tiene mediana de 50 frames (1.7 s), y una roca a
-    // 30 m/s recorre 50 m en ese tiempo. Medir desde el trazo subestima
-    // siempre, y subestima más cuanto más tapado estaba el origen.
-    const desdePozo = pozo
-      ? Math.hypot(T.pf.x - pozo.px, T.pf.y - pozo.py) / (C.calibra.escala_px_por_m || 1)
-      : null;
+    // El alcance: recta del tiro de origen al último punto del trazo. Ver
+    // `alcanceDesde`, que es la misma que usan el panel y el histograma.
+    const desdePozo = cand.length ? alcanceDesde(T, cand[0].i) : null;
 
     // El agregado por pozo cuenta SOLO las visibles: es lo que alimenta el
     // heatmap y el reporte, y tiene que reflejar lo que dejaste en pantalla.
@@ -3411,6 +4466,20 @@ function construirEntregable(){
       // la unión leyendo el archivo, sin tener que confiar en la memoria de
       // quien la hizo.
       fuente: T.fuente || "pipeline",
+      // La revision humana, explicita en el archivo. `aprobada` es "una persona
+      // miro esta trayectoria entera y se la lleva"; sin el campo, quien lee no
+      // puede distinguir lo revisado de lo que simplemente sobrevivio a los
+      // filtros.
+      aprobada: !!T.aprobada,
+      // Cuantas veces se le paso el alisado. Importa para leer las metricas: en
+      // una trayectoria alisada la tortuosidad y el R2 tienden a 1 POR
+      // CONSTRUCCION —se le impuso un modelo—, asi que dejan de ser evidencia
+      // independiente de su calidad.
+      alisada: T.alisada || 0,
+      // Enderezar SI cambia la forma del vuelo (ajuste global contra el modelo
+      // balistico); alisar solo quita el glitter y deja los extremos donde
+      // estaban. Quien lea el archivo tiene que poder distinguirlos.
+      enderezada: T.enderezada || 0,
       unida_de: T.unida_de || null,
       // De que trayectoria salio este recorte y cuantos puntos se le quitaron.
       // Es la respuesta a «¿por que esta traza mide la mitad?»: la original
@@ -3527,7 +4596,16 @@ function construirEntregable(){
       // al reporte. `trayectorias` es el total detectado, para que se vea
       // cuanto se filtro y no parezca que el detector encontro menos.
       trayectorias: trayectorias.length,
+      // `activas` es lo que quedo en pantalla —de ahi salen las cifras y las
+      // imagenes—, y `aprobadas` es cuanto de eso paso por revision humana. El
+      // archivo lleva el historial completo (ocultas y descartadas incluidas),
+      // pero estas dos son las que hay que mirar para saber que se esta viendo.
       activas: act.length,
+      // Sobre las ACTIVAS, igual que `activas` y que el contador de la
+      // pantalla: una aprobada que despues se descarto a mano conserva su marca
+      // en el archivo —esta en su trayectoria— pero no es parte de la cosecha.
+      aprobadas: act.filter(t => t.aprobada).length,
+      alisadas: trayectorias.filter(t => t.alisada).length,
       ocultas_por_filtro: trayectorias.filter(t => t.estado === "oculta").length,
       ocultas_por_motivo: trayectorias.reduce((a, t) => (
         t.estado === "oculta" ? (a[t.oculta_por || "?"] = (a[t.oculta_por || "?"] || 0) + 1, a) : a), {}),
@@ -3535,6 +4613,13 @@ function construirEntregable(){
       por_clasificacion: cuenta(t => t.clasificacion),
       por_nivel_de_origen: cuenta(t => t.origen ? t.origen.nivel : "sin asociar"),
       pozos_con_rocas: porPozo.size,
+      // Cuantas quedaron sin tiro de origen y por que. Es lo que hay que
+      // corregir a mano, asi que el archivo lo dice en vez de obligar a
+      // contarlo: los mismos motivos que muestra el panel de asociacion.
+      sin_empalme: act.filter(t => !t.origen).length,
+      sin_empalme_por_motivo: P.reduce((a, T) => (
+        T.estado === "activa" && T.sin_empalme
+          ? (a[T.sin_empalme] = (a[T.sin_empalme] || 0) + 1, a) : a), {}),
       alcance_max_m: dists.length ? dists[dists.length-1] : null,
       alcance_mediano_m: dists.length ? dists[Math.floor(dists.length/2)] : null,
       fuera_del_radio_evacuacion: act.filter(t => (t.salida_area_m || 0) > radio).length,
@@ -3568,6 +4653,10 @@ function descargar(obj, nombre){
 // `capas` decide qué lleva la imagen, para que cada entregable sea un botón y
 // no dependa de cómo tengas la pantalla en ese momento.
 function exportarImagen(capas, sufijo){
+  return conVistaLimpia(() => exportarImagenInterna(capas, sufijo));
+}
+
+function exportarImagenInterna(capas, sufijo){
   const W = C.meta.ancho, H = C.meta.alto;
   const off = document.createElement("canvas");
   off.width = W; off.height = H;
@@ -3771,19 +4860,48 @@ function exportarHeatmap(){
   bajar(off, "5_heatmap");
 }
 
-// Distribución de cuánto se alejó cada roca DEL ÁREA DE VOLADURA (no de cuánto
-// voló): el radio de evacuación se mide desde la tronadura, no desde donde
-// nació cada roca, y solo esa medida es comparable con la línea.
+// Distribución de ALCANCES: hasta dónde llegó cada roca, medido en recta desde
+// su tiro de origen (ver `alcanceDesde`). Es la misma cifra que el entregable
+// llama `distancia_m` y resume en `alcance_max_m`, así que el gráfico y el JSON
+// por fin dicen lo mismo.
+//
+// Antes graficaba `escape_relativo * diametro_equivalente`, o sea cuánto se
+// salió la roca del BORDE del polígono de voladura. Esa medida tiene dos
+// problemas: vale 0 para toda roca que no cruzó el borde —aunque haya volado
+// 80 m dentro del área—, y depende de un diámetro que, si la zona de origen no
+// llega en el job, cae al tope de seguridad de 1.13 m y mete el caso entero en
+// la primera barra sin avisar. Sigue viva en el JSON como `salida_area_m`, que
+// es donde importa.
 function exportarHistograma(){
-  const act = C.proyecciones.filter(T => T.estado === "activa");
-  if (!act.length){ alert("No hay trayectorias visibles."); return; }
-  const diam = C.zonas.diametro_equiv_m || 1;
   const radio = C.zonas.seguridad_m;
-  const d = act.map(T => (T.escape_relativo || 0) * diam);
-  const cens = act.map(T => T.clasificacion === "Fuera de vista");
+  const d = [], cens = [];
+  let sinPozo = 0;
+  for (let i = 0; i < C.proyecciones.length; i++){
+    const T = C.proyecciones[i];
+    if (T.estado !== "activa") continue;
+    // Si la trayectoria no llegó a asociarse se cae a la cuerda del trazo,
+    // igual que el resumen del entregable: sacarla del gráfico sería peor que
+    // medirla corta. Pero se cuenta, y se avisa antes de exportar.
+    const a = alcanceDesde(T, A.activo ? A.mejor[i] : -1);
+    if (a == null) sinPozo++;
+    d.push(a != null ? a : (T.distancia_m || 0));
+    cens.push(T.clasificacion === "Fuera de vista");
+  }
+  if (!d.length){ alert("No hay trayectorias visibles."); return; }
+
+  // Sin tiro de origen no hay alcance: la cuerda del trazo mide solo el pedazo
+  // que la cámara alcanzó a ver —mediana de 5 m en los casos medidos— y el
+  // gráfico sale entero en la primera barra. Es un resultado plausible a la
+  // vista y completamente falso, así que se dice antes de bajarlo.
+  if (sinPozo && !confirm(
+      `${sinPozo} de ${d.length} trayectorias no tienen tiro de origen`
+      + (A.activo ? "" : " (la asociación al pozo está apagada)")
+      + ".\n\nPara ésas el gráfico mide solo el trazo visible, que es mucho más "
+      + "corto que el vuelo real.\n\n¿Exportar igual?")) return;
 
   const paso = 10;
-  const tope = Math.max(radio * 1.25, Math.ceil(Math.max(...d) / paso) * paso);
+  const tope = Math.max((radio || 0) * 1.25,
+                        Math.ceil(Math.max(...d) / paso) * paso, paso);
   const n = Math.round(tope / paso);
   const barras = new Array(n).fill(0), barrasC = new Array(n).fill(0);
   d.forEach((v, i) => {
@@ -3845,20 +4963,28 @@ function exportarHistograma(){
   }
 
   // La línea del radio se queda: no es un título, es parte de la lectura del
-  // gráfico (de ahí a la derecha es flyrock).
-  g.strokeStyle = "#d03b3b"; g.lineWidth = 3;
-  g.beginPath(); g.moveTo(ex(radio), T0 - 14); g.lineTo(ex(radio), B); g.stroke();
-  g.fillStyle = "#d03b3b"; g.textAlign = "left"; g.textBaseline = "middle";
-  g.font = "600 21px system-ui, sans-serif";
-  g.fillText(`radio de evacuación ${radio.toFixed(0)} m`, ex(radio) + 12, T0 + (B - T0) * 0.40);
-  g.font = "21px system-ui, sans-serif";
-  g.fillText("flyrock →", ex(radio) + 12, T0 + (B - T0) * 0.50);
+  // gráfico (de ahí a la derecha es flyrock). Medir desde el tiro y no desde el
+  // borde de la voladura hace la comparación CONSERVADORA —el pozo está dentro
+  // del área, así que el alcance nunca es menor que la salida—, que para un
+  // informe de seguridad es el lado correcto en que equivocarse.
+  //
+  // Un caso congelado puede no traer el radio; antes ese `radio.toFixed(0)`
+  // reventaba la exportación entera sin mensaje.
+  if (radio > 0){
+    g.strokeStyle = "#d03b3b"; g.lineWidth = 3;
+    g.beginPath(); g.moveTo(ex(radio), T0 - 14); g.lineTo(ex(radio), B); g.stroke();
+    g.fillStyle = "#d03b3b"; g.textAlign = "left"; g.textBaseline = "middle";
+    g.font = "600 21px system-ui, sans-serif";
+    g.fillText(`radio de evacuación ${radio.toFixed(0)} m`, ex(radio) + 12, T0 + (B - T0) * 0.40);
+    g.font = "21px system-ui, sans-serif";
+    g.fillText("flyrock →", ex(radio) + 12, T0 + (B - T0) * 0.50);
+  }
 
   // Solo los rótulos de los ejes. Sin título, sin subtítulo y sin nota al pie:
   // el gráfico va dentro de un documento que ya pone el contexto.
   g.fillStyle = "#52514e"; g.font = "21px system-ui, sans-serif";
   g.textAlign = "center"; g.textBaseline = "alphabetic";
-  g.fillText("Distancia fuera del área de voladura (m)", (L + R) / 2, B + 58);
+  g.fillText("Alcance desde el tiro de origen (m)", (L + R) / 2, B + 58);
   g.save();
   g.translate(34, (T0 + B) / 2); g.rotate(-Math.PI / 2);
   g.fillText("Rocas", 0, 0);
@@ -3881,8 +5007,8 @@ function exportarHistograma(){
   bajar(off, "6_histograma");
 }
 
-$("btnHeatmap").addEventListener("click", exportarHeatmap);
-$("btnHisto").addEventListener("click", exportarHistograma);
+$("btnHeatmap").addEventListener("click", () => conVistaLimpia(exportarHeatmap));
+$("btnHisto").addEventListener("click", () => conVistaLimpia(exportarHistograma));
 
 // Los seis de una. Se separan en el tiempo porque algunos navegadores agrupan
 // descargas simultáneas y se pierden.
@@ -3892,8 +5018,8 @@ $("btnTodo").addEventListener("click", () => {
     () => exportarImagen({ fondo: true }, "1_fondo"),
     () => exportarImagen({ fondo: true, trazos: true, malla: true, zonas: true }, "2_trayectorias"),
     () => exportarImagen({ fondo: true, trazos: true, malla: true, zonas: true, empalmes: true }, "3_origen"),
-    exportarHeatmap,
-    exportarHistograma,
+    () => conVistaLimpia(exportarHeatmap),
+    () => conVistaLimpia(exportarHistograma),
   ];
   pasos.forEach((f, i) => setTimeout(f, i * 700));
 });
@@ -3907,62 +5033,210 @@ $("btnEntregable").addEventListener("click", () => {
 
 // El caso editado se descarga como JSON: mismo formato de entrada, asi que se
 // puede volver a abrir tal cual (y sirve de ground truth para la fase temporal).
-$("btnGuardar").addEventListener("click", () => {
+// El caso tal como sale de aca: mismo contenido que el archivo de «Guardar
+// avance». Estaba metido dentro del handler del boton, y ahora ademas lo pide
+// el wizard para llevarse el estado a la otra vista sin guardar nada.
+function casoParaSalir(){
   const copia = JSON.parse(JSON.stringify(C));
   for (const T of copia.proyecciones){
     delete T.n; delete T.p0; delete T.pf; delete T.bb;
+    delete T.sin_empalme;              // se recalcula al abrir
     if (T.estado === "oculta"){ T.estado = "activa"; T.razon = null; }
+    if (!T.aprobada) delete T.aprobada;   // el archivo solo lleva lo que es
   }
-  copia.vista = { tortuosidad: F.tor, escape_relativo: F.esc, r2_score: F.r2, largo_min: F.len };
+  // Todo lo que define COMO SE VE el caso, no solo los cuatro sliders. Al
+  // retomar, lo que el usuario quiere de vuelta es la pantalla que dejo: sus
+  // umbrales, las clases que apago, las capas encendidas y si estaba asociando.
+  copia.vista = {
+    tortuosidad: F.tor, escape_relativo: F.esc, r2_score: F.r2, largo_min: F.len,
+    clases: { ...F.clases }, ver_descartadas: F.verDesc,
+    capas: { fondo: U.fondo, malla: U.malla, zonas: U.zonas, escape: U.escape },
+    asoc: { activo: A.activo, temporal: A.temporal },
+    // El modo de trabajo tambien vuelve: retomar es encontrar la pantalla como
+    // la dejaste. (`aprobada` viaja en cada trayectoria, no aca.)
+    pintado: U.pintado, lupa: F.lupa, alisado: ALISADO.fuerza,
+  };
   // La calibracion de la asociacion viaja con el caso: sin el nadir y el k con
   // que se calcularon, las asociaciones guardadas no son reproducibles.
   copia.calibra.nadir = [A.nadir.x, A.nadir.y];
   copia.calibra.k = A.k;
   copia.calibra.sigma_grados = A.sigma;
+  return copia;
+}
+
+$("btnGuardar").addEventListener("click", () => {
+  const copia = casoParaSalir();
   const b = new Blob([JSON.stringify(copia)], { type: "application/json" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(b);
   a.download = `caso_${C.meta.nombre}_editado.json`;
   a.click();
+
+  // Y ademas al core, pisando el avance anterior de ESTE analisis.
+  //
+  // Las dos cosas a la vez y no una u otra: el servidor guarda "lo ultimo que
+  // estabas haciendo" —que es lo que uno quiere el 99% de las veces, y se
+  // recupera sin depender de que el archivo siga en Descargas— y el archivo
+  // permite tener guardadas VARIAS alternativas del mismo analisis, que el
+  // servidor no puede porque solo conserva la ultima.
+  guardarAvanceEnCore(copia);
 });
+
+async function guardarAvanceEnCore(copia){
+  const api = new URLSearchParams(location.search).get("api");
+  const job = C.meta && C.meta.job;
+  if (!api || !job) return;                 // caso congelado: solo archivo
+  try {
+    const r = await fetch(`${api.replace(/\/$/, "")}/api/jobs/${job}/avance`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(copia),
+    });
+    if (!r.ok) throw new Error(`el core respondio ${r.status}`);
+    const d = await r.json();
+    avisar(`Avance guardado · ${d.aprobadas} aprobadas · `
+         + `queda en el análisis y en tu carpeta de descargas`);
+  } catch (e){
+    // El archivo YA se bajo, asi que no se perdio nada: se dice que el
+    // respaldo del servidor no quedo y se sigue.
+    console.warn("[flyrocks] no se pudo guardar el avance en el core", e);
+    avisar("⚠ Se descargó el archivo, pero el análisis no quedó "
+         + "guardado en el servidor");
+  }
+}
 
 // Retomar un avance guardado. Sin esto, "Guardar avance" era un botón que
 // producía un archivo que nada podía abrir.
+// Aplica un caso que llega de afuera: del boton «Cargar» o de la pantalla de
+// entrada del asistente, que lo manda por postMessage. Es el mismo trabajo en
+// los dos casos, asi que vive en una sola funcion.
+async function aplicarCaso(nuevo, etiqueta){
+  if (!nuevo || !nuevo.proyecciones || !nuevo.malla)
+    throw new Error("esto no es un caso guardado (¿es el JSON de entregable?)");
+
+  C = nuevo;
+  prepararTrayectorias();
+  derivarRangos();
+  // La calibración guardada manda sobre la del caso original: es el estado
+  // con el que estabas trabajando.
+  if (C.calibra.nadir) A.nadir = { x: C.calibra.nadir[0], y: C.calibra.nadir[1] };
+  A.k = C.calibra.k ?? 0;
+  A.sigma = C.calibra.sigma_grados ?? 4;
+  $("fK").value = A.k; $("vK").textContent = A.k.toFixed(2);
+  $("fSig").value = A.sigma; $("vSig").textContent = A.sigma + "°";
+  A.hayTiempo = C.proyecciones.some(t => t.t_ini != null);
+  U.sel = -1;
+
+  document.body.classList.add("cargada");
+  ajustarVista();
+  aplicarVista(C.vista);
+  recalcular(); verDetalle();
+  $("pie").textContent = `avance cargado: ${etiqueta}`;
+
+  // El archivo trae las trayectorias y las ediciones, pero NO las imagenes: la
+  // mascara y el frame pesan del orden de 15 MB y viven en el core. Como el
+  // avance guarda de que job salio, se pueden ir a buscar — y recien ahi el
+  // archivo alcanza para reconstruir la pantalla completa desde cero, sin
+  // pasar por el asistente.
+  await traerArtefactos();
+  dibujar();
+}
+
+// Las imagenes del job al que pertenece el caso cargado. Silenciosa a
+// proposito: sin fondo la vista igual sirve para filtrar, descartar y exportar,
+// asi que un core apagado no puede convertirse en un error que tape el trabajo
+// que el usuario acaba de recuperar.
+async function traerArtefactos(){
+  if (IMG.mascara) return;                       // ya hay fondo: no se toca
+  const api = new URLSearchParams(location.search).get("api");
+  const job = C.meta && C.meta.job;
+  if (!api || !job) return;
+  const base = api.replace(/\/$/, "");
+  const ruta = (r) => `${base}/temp_videos/${r}`;
+
+  try {
+    // El propio avance suele traer las rutas; si no (un caso viejo), se le
+    // preguntan al core, que es quien las guarda con el job.
+    let A_ = C.meta.artefactos;
+    if (!A_ || !A_.mascara){
+      const r = await fetch(`${base}/api/results/${job}`);
+      if (!r.ok) throw new Error(`el core no conoce el job (${r.status})`);
+      A_ = ((await r.json()).entrada || {}).artefactos || {};
+    }
+    IMG.mascara = await cargarImg(ruta(A_.mascara || "mascara_cambios.png"));
+    if (A_.frame) cargarImg(ruta(A_.frame)).then(im => { IMG.frame = im; dibujar(); });
+    if (A_.video){ CLIP.url = ruta(A_.video); marcarClip(true, ""); }
+    ajustarVista();
+  } catch (err){
+    console.warn("[flyrocks] no se pudo traer el fondo del job", err);
+    $("pie").textContent += " — sin fondo: el core no respondió";
+  }
+}
+
+// Volver al resultado crudo del pipeline. Recarga con una marca en la URL en
+// vez de rearmar el caso a mano: es el mismo camino de carga de siempre, sin
+// una segunda forma de construir lo mismo que despues se desincroniza. El
+// avance sigue guardado en el core; esto solo elige no aplicarlo.
+$("btnOriginal").addEventListener("click", () => {
+  if (!confirm("Se muestra el análisis como salió del pipeline." + "\n\n"
+             + "Tu avance guardado NO se borra: para volver a él, recarga la "
+             + "página o vuelve a abrir el análisis.")) return;
+  const p = new URLSearchParams(location.search);
+  p.set("sin_avance", "1");
+  location.search = p.toString();
+});
+
 $("btnCargar").addEventListener("click", () => $("fileCaso").click());
 $("fileCaso").addEventListener("change", (e) => {
   const f = e.target.files[0];
   if (!f) return;
   const lector = new FileReader();
   lector.onload = () => {
-    try {
-      const nuevo = JSON.parse(lector.result);
-      if (!nuevo.proyecciones || !nuevo.malla)
-        throw new Error("esto no es un caso guardado (¿es el JSON de entregable?)");
-      C = nuevo;
-      prepararTrayectorias();
-      derivarRangos();
-      // La calibración guardada manda sobre la del caso original: es el estado
-      // con el que estabas trabajando.
-      if (C.calibra.nadir) A.nadir = { x: C.calibra.nadir[0], y: C.calibra.nadir[1] };
-      A.k = C.calibra.k ?? 0;
-      A.sigma = C.calibra.sigma_grados ?? 4;
-      $("fK").value = A.k; $("vK").textContent = A.k.toFixed(2);
-      $("fSig").value = A.sigma; $("vSig").textContent = A.sigma + "°";
-      A.hayTiempo = C.proyecciones.some(t => t.t_ini != null);
-      U.sel = -1;
-      ajustarVista(); recalcular(); verDetalle();
-      $("pie").textContent = `avance cargado: ${f.name}`;
-    } catch (err){
-      alert("No se pudo cargar: " + err.message);
-    }
+    aplicarCaso(JSON.parse(lector.result), f.name)
+      .catch(err => alert("No se pudo cargar: " + err.message));
   };
   lector.readAsText(f);
   e.target.value = "";
 });
 
+// El avance que el usuario solto en la pantalla de entrada del asistente. La
+// vista vive en un iframe del MISMO origen, asi que el mensaje se acepta solo
+// de ahi: cualquier otra ventana que intente empujar un caso se ignora.
+window.addEventListener("message", (e) => {
+  if (e.origin !== location.origin) return;
+  const d = e.data;
+  if (!d) return;
+
+  // El wizard pide el estado ACTUAL para llevarselo a la vista anterior. Se
+  // manda lo mismo que baja «Guardar avance», pero sin escribir el archivo ni
+  // pisar el avance del core: es una copia para mirar, no un guardado.
+  //
+  // Se responde SIEMPRE, aunque el caso no este cargado todavia (`caso: null`),
+  // porque del otro lado hay alguien esperando: callarse deja al wizard colgado
+  // hasta que se le acabe el plazo.
+  if (d.tipo === "flyrocks:dame-avance"){
+    let caso = null;
+    try { caso = C ? casoParaSalir() : null; }
+    catch (err){ console.warn("[flyrocks] no se pudo armar el caso para salir", err); }
+    if (e.source) e.source.postMessage(
+      { tipo: "flyrocks:avance-actual", caso }, location.origin);
+    return;
+  }
+
+  if (d.tipo !== "flyrocks:avance") return;
+  CARGA_INICIAL
+    .then(() => aplicarCaso(d.caso, d.nombre || "avance"))
+    .catch(err => alert("No se pudo cargar el avance: " + err.message));
+});
+
 window.addEventListener("resize", () => { if (C) ajustarVista(); });
 
-cargar().catch(err => {
+// La carga inicial queda a mano para que el avance que llega por postMessage
+// pueda ESPERARLA. Sin esto hay una carrera real: el iframe avisa que cargo
+// apenas corre este script, pero `cargar()` sigue esperando al core, y si el
+// avance se aplicara antes, la respuesta del core lo pisaria — el usuario
+// veria su trabajo aparecer y desaparecer solo.
+const CARGA_INICIAL = cargar().catch(err => {
   console.error(err);
   $("pie").textContent = "Error: " + err.message;
 });
